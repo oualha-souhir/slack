@@ -639,8 +639,8 @@ async function handleOrderSlackApi(request, context) {
 	});
 
 	try {
-		console.log("Delay monitoring test completed");
-		context.log("📩 Commande Slack reçue !");
+		console.log("staging");
+		context.log("staging");
 
 		// const body = await request.json();
 		// if (body.type === "url_verification") {
@@ -662,7 +662,8 @@ async function handleOrderSlackApi(request, context) {
 		const isUserAdmin = await isAdminUser(userId);
 
 		// ********************* $$$ ******************************************* */
-		if (command === "/caiss-test") {
+		if (command === "/caisse-test") {
+
 			// if (command === "/caisse-test") {
 			const isUserAdmin = await isAdminUser(userId);
 			const isUserFinance = await isFinanceUser(userId);
@@ -1224,7 +1225,7 @@ async function handleOrderSlackApi(request, context) {
 			// } else if (command == "/order") {
 		} else if (command == "/order-test") {
 
-			
+
 			if (!text.trim()) {
 				console.log("** no text");
 				return createSlackResponse(200, {  
