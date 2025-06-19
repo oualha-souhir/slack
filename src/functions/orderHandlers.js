@@ -1223,11 +1223,10 @@ async function handleOrderSlackApi(request, context) {
 			// ********************* $$$ ******************************************* */
 			// } else if (command == "/order") {
 		} else if (command == "/order") {
-			// If no text is provided, prompt the user with options
 
 			if (!text.trim()) {
 				console.log("** no text");
-				return createSlackResponse(200, {
+				return createSlackResponse(200, {  
 					response_type: "ephemeral",
 					blocks: [
 						{
