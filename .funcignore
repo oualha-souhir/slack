@@ -1,0 +1,12 @@
+*.js.map
+*.ts.map
+.git*
+.vscode
+local.settings.json
+test
+.nyc_output
+coverage
+node_modules/@types
+*.log
+.env
+.DS_Store
