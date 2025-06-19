@@ -1224,6 +1224,7 @@ async function handleOrderSlackApi(request, context) {
 			// } else if (command == "/order") {
 		} else if (command == "/order-test") {
 
+			
 			if (!text.trim()) {
 				console.log("** no text");
 				return createSlackResponse(200, {  
