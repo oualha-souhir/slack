@@ -10,7 +10,7 @@ const { postSlackMessageWithRetry } = require("./notificationService");
 const formatDate = (date) => {
 	if (!date || isNaN(new Date(date).getTime())) return "";
 	return new Date(date).toISOString().split("T")[0];
-};
+};  
 
 // Function to generate a report based on order ID, team, or date
 async function exportReport(context, reportType, value, userId, channelId) {
