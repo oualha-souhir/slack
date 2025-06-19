@@ -1,0 +1,1123 @@
+ submit_funding_request in generateFundingRequestForm in caisseService
+        -> handled in handleViewSubmission in orderUtils
+        -> triggers handleFundingRequestSubmission in  caisseService
+
+pre_approve_funding  in handleFundingRequestSubmission
+        -> handled in handleBlockActions in formService
+        -> triggers handlePreApproval in caisseService
+
+fill_funding_details in handlePreApproval
+       -> handled in handleBlockActions in formService
+       -> triggers generateFundingApprovalPaymentModal in formService
+
+
+submit_finance_details in generateFundingApprovalPaymentModal in formService
+        -> handled in handleSlackInteractions in interactionHandlers
+        -> triggers handleFinanceDetailsSubmission in caisseService
+
+funding_approval_payment in handleFinanceDetailsSubmission
+        -> handled in handleSlackInteractions in interactionHandlers
+        -> triggers handleFundingApprovalPaymentSubmission
+
+
+
+async function generateFundingRequestForm(context, trigger_id,params) {
+  // Validate inputs
+  if (!trigger_id) {
+    context.log("Error: trigger_id is missing");
+    throw new Error("trigger_id is required to open a modal");
+  }
+
+  const channelId = params.get("channel_id");
+  if (!channelId) {
+    context.log("Warning: channel_id is missing in params, falling back to default");
+    // Fallback to a default channel or user DM if needed
+    channelId = process.env.SLACK_FINANCE_CHANNEL_ID || "unknown";
+  }
+
+  context.log(`Generating funding request form with channelId: ${channelId}`);
+  const modal = {
+    type: "modal",
+    callback_id: "submit_funding_request",
+    title: { type: "plain_text", text: "Demande de Fonds" },
+    private_metadata: JSON.stringify({
+      channelId: channelId, // Pass the channel ID
+    }),
+    submit: { type: "plain_text", text: "Soumettre" },
+    close: { type: "plain_text", text: "Annuler" },
+    blocks: [
+      {
+        type: "input",
+        block_id: "funding_amount",
+        element: {
+          type: "plain_text_input",
+          action_id: "input_funding_amount",
+          placeholder: { type: "plain_text", text: "Ex: 1000 XOF" },
+        },
+        label: { type: "plain_text", text: "Montant" },
+      },
+      {
+        type: "input",
+        block_id: "funding_reason",
+        element: {
+          type: "plain_text_input",
+          action_id: "input_funding_reason",
+          placeholder: {
+            type: "plain_text",
+            text: "Ex: Paiements fournisseurs",
+          },
+        },
+        label: { type: "plain_text", text: "Motif" },
+      },
+      {
+        type: "input",
+        block_id: "funding_date",
+        element: {
+          type: "datepicker",
+          action_id: "input_funding_date",
+          placeholder: { type: "plain_text", text: "Sélectionner une date" },
+        },
+        label: { type: "plain_text", text: "Date Requise" },
+      },
+    ],
+  };
+
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/views.open",
+    { trigger_id, view: modal },
+    process.env.SLACK_BOT_TOKEN
+  );
+}
+
+
+
+async function handleViewSubmission(payload, context) {
+  context.log("handleViewSubmission function");
+  const formData = payload.view.state.values;
+  const userId = payload.user.id;
+  const userName = payload.user.username;
+  let actionId;
+  console.log("payload2", payload);
+  const slackToken = process.env.SLACK_BOT_TOKEN;
+  const existingMetadata = payload.view.private_metadata
+    ? JSON.parse(payload.view.private_metadata)
+    : {};
+  const newPrivateMetadata = JSON.stringify({
+    channelId: existingMetadata.channelId || payload.channel?.id || "unknown",
+    formData: {
+      ...(existingMetadata.formData || {}),
+      ...payload.view.state.values,
+    },
+    originalViewId: existingMetadata.originalViewId || payload.view.id,
+  });
+  context.log(`New private metadata: ${newPrivateMetadata}`);
+  const channelId = existingMetadata.channelId;
+  const orderId = existingMetadata.orderId;
+  // Determine if this is from an edit operation
+  const isFromEdit =
+    existingMetadata.isEdit === true && existingMetadata.orderId;
+  context.log(`Is this submission from edit_order? ${isFromEdit}`);
+
+  // Optionally set a source variable for clarity
+  const submissionSource = isFromEdit ? "edit_order" : "new_submission";
+  context.log(`Submission source: ${submissionSource}`);
+  let channelName = "unknown";
+  console.log("channelId3", channelId);
+  if (channelId) {
+    try {
+      const result = await axios.post(
+        "https://slack.com/api/conversations.info",
+        querystring.stringify({ channel: channelId }),
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+        }
+      );
+      if (result.data.ok) channelName = result.data.channel.name;
+    } catch (error) {
+      context.log(`Failed to get channel name: ${error.message}`);
+    }
+  }
+  
+  if (payload.view.callback_id === "submit_funding_request") {
+    console.log("**1 submit_funding_request");
+    console.log("payload.user.id", payload.user.id);
+    // Immediate response to close modal
+    context.res = {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response_action: "clear" }),
+    };
+    await postSlackMessage(
+      "https://slack.com/api/chat.postMessage",
+      {
+        channel: channelId || payload.user.id,
+        text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+    // Process in background
+    setImmediate(async () => {
+      console.log("userName1", userName);
+      return await handleFundingRequestSubmission(payload, context, userName);
+    });
+
+    return context.res;
+  }
+  
+
+  return createSlackResponse(200, { text: "Submission non reconnue" });
+}
+
+async function handleFundingRequestSubmission(payload, context, userName) {
+  console.log("** handleFundingRequestSubmission");
+  const formData = payload.view.state.values;
+  const userId = userName;
+
+  const errors = await checkFormErrors(formData, [], context);
+  if (errors.errors.length) {
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: userId,
+        user: userId,
+        text: `Erreurs: ${errors.errors.join(", ")}`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+    return createSlackResponse(200, "");
+  }
+
+  // Parse amount and currency from input (e.g., "1000 USD")
+  const amountInput = formData.funding_amount.input_funding_amount.value;
+  const amountMatch = amountInput.match(/(\d+(?:\.\d+)?)\s*([A-Z]{3})/);
+  if (!amountMatch) {
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: userId,
+        user: userId,
+        text: "Format du montant incorrect. Exemple: 1000 XOF",
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+    return createSlackResponse(200, "");
+  }
+
+  const amount = parseFloat(amountMatch[1]);
+  const currency = amountMatch[2].toUpperCase();
+  if (!["XOF", "USD", "EUR"].includes(currency)) {
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: userId,
+        user: userId,
+        text: "Devise non reconnue. Utilisez XOF, USD ou EUR.",
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+    return createSlackResponse(200, "");
+  }
+
+  const reason = formData.funding_reason.input_funding_reason.value;
+  const requestedDate = formData.funding_date.input_funding_date.selected_date;
+
+  const caisse =
+    (await Caisse.findOne()) ||
+    new Caisse({
+      balances: { XOF: 0, USD: 0, EUR: 0 },
+      currency: "XOF",
+    });
+
+  // Generate requestId in format FUND/YYYY/MM/XXXX
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = (now.getMonth() + 1).toString().padStart(2, "0");
+  const existingRequests = caisse.fundingRequests.filter((req) =>
+    req.requestId.startsWith(`FUND/${year}/${month}/`)
+  );
+  const sequence = existingRequests.length + 1;
+  const sequenceStr = sequence.toString().padStart(4, "0");
+  const requestId = `FUND/${year}/${month}/${sequenceStr}`;
+
+  // Push new funding request with "En attente" status
+  caisse.fundingRequests.push({
+    requestId,
+    amount,
+    currency,
+    reason,
+    requestedDate,
+    submittedBy: userId,
+    submitterName: userName,
+    status: "En attente",
+    submittedAt: new Date(),
+    workflow: {
+      stage: "initial_request", // Track workflow stage
+      history: [
+        {
+          stage: "initial_request",
+          timestamp: new Date(),
+          actor: userId,
+          details: "Demande initiale soumise"
+        }
+      ]
+    }
+  });
+
+  await caisse.save();
+
+  // Sync to Excel
+  try {
+    await syncCaisseToExcel(caisse, requestId);
+  } catch (error) {
+    console.error(`Excel sync failed: ${error.message}`);
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: userId,
+        user: userId,
+        text: "Erreur lors de la synchronisation avec Excel. La demande a été enregistrée, mais contactez l'administrateur.",
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+  }
+
+  // Notify admin with initial approval buttons
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: process.env.SLACK_ADMIN_ID,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: ":heavy_dollar_sign: Nouvelle Demande de Fonds",
+            emoji: true,
+          },
+        },
+        {
+          type: "divider",
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*ID:*\n${requestId}` },
+            { type: "mrkdwn", text: `*Montant:*\n${amount} ${currency}` },
+            { type: "mrkdwn", text: `*Motif:*\n${reason}` },
+            { type: "mrkdwn", text: `*Date requise:*\n${requestedDate}` },
+            { type: "mrkdwn", text: `*Demandeur:*\n${userName}` },
+            {
+              type: "mrkdwn",
+              text: `*Date de soumission:*\n${new Date().toLocaleDateString()}`,
+            },
+          ],
+        },
+        {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `Soldes actuels: XOF: *${caisse.balances.XOF}*, USD: *${caisse.balances.USD}*, EUR: *${caisse.balances.EUR}*`,
+            },
+          ],
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Pré-approuver", emoji: true },
+              style: "primary",
+              value: requestId,
+              action_id: "pre_approve_funding", // New action for initial approval
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Rejeter", emoji: true },
+              style: "danger",
+              value: requestId,
+              action_id: "reject_fund",
+            },
+          ],
+        },
+      ],
+      text: `Nouvelle demande de fonds: ${amount} ${currency} pour "${reason}" (ID: ${requestId})`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  // Notify the requester
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: userId,
+      text: `✅ Votre demande de fonds a été soumise (ID: ${requestId}). Vous serez notifié lorsqu'elle sera traitée.`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  return createSlackResponse(200, "");
+}
+async function handleBlockActions(payload, context) {
+  const action = payload.actions[0];
+  const actionId = action.action_id;
+  const userName = payload.user.username;
+  console.log("payload.actions[0].action_id111", payload.actions[0].action_id);
+  let requestId;
+  if (actionId === "fill_funding_details") {
+    console.log("**3 fill_funding_details");
+    
+    // Immediate response to close modal
+    context.res = {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response_action: "clear" }),
+    };
+
+    // Process in background
+    setImmediate(async () => {
+      const messageTs = payload.message?.ts;
+      console.log("approve_funding");
+      const requestId = action.value; // e.g., FUND/2025/04/0070
+
+      await generateFundingApprovalPaymentModal(
+        context,
+        payload.trigger_id,
+        messageTs,
+        requestId
+      );
+      return createSlackResponse(200, "");
+    });
+
+    return context.res;
+  }
+  if (payload.type === "block_actions") {
+    if (actionId.startsWith("view_order_")) {
+      return await view_order(payload, action, context);
+    }
+console.log("actionId1", actionId);
+ switch (actionId) {
+case "pre_approve_funding":
+        console.log("**2 pre_approve_funding");
+        await handlePreApproval(payload, context);
+        return createSlackResponse(200, "");
+
+        }
+  }
+  return createSlackResponse(400, "Type d'action non supporté");
+}
+
+
+
+
+async function handlePreApproval(payload, context) {
+  const action = payload.actions[0];
+  const requestId = action.value;
+  const userId = payload.user.id;
+  const userName = payload.user.username || userId;
+  const messageTs = payload.message.ts;
+  const channelId = payload.channel.id;
+
+  // Find the funding request
+  const caisse = await Caisse.findOne({
+    "fundingRequests.requestId": requestId,
+  });
+  if (!caisse) {
+    console.error(`Caisse not found for request ${requestId}`);
+    return createSlackResponse(200, "Une erreur s'est produite");
+  }
+  
+  const requestIndex = caisse.fundingRequests.findIndex(
+    (r) => r.requestId === requestId
+  );
+  if (requestIndex === -1) {
+    console.error(`Request ${requestId} not found`);
+    return createSlackResponse(200, "Demande non trouvée");
+  }
+
+  const request = caisse.fundingRequests[requestIndex];
+  
+  // Update request status and workflow tracking
+  request.status = "Pré-approuvé";
+  request.preApprovedBy = userId;
+  request.preApprovedAt = new Date();
+  request.workflow.stage = "pre_approved";
+  request.workflow.history.push({
+    stage: "pre_approved",
+    timestamp: new Date(),
+    actor: userId,
+    details: "Demande pré-approuvée par admin"
+  });
+
+  await caisse.save();
+  
+  // Update admin message
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.update",
+    {
+      channel: channelId,
+      ts: messageTs,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: ":heavy_dollar_sign: Demande de Fonds (Pré-approuvée)",
+            emoji: true,
+          },
+        },
+        {
+          type: "divider",
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*ID:*\n${requestId}` },
+            { type: "mrkdwn", text: `*Montant:*\n${request.amount} ${request.currency}` },
+            { type: "mrkdwn", text: `*Motif:*\n${request.reason}` },
+            { type: "mrkdwn", text: `*Date requise:*\n${request.requestedDate}` },
+            { type: "mrkdwn", text: `*Demandeur:*\n${request.submitterName || request.submittedBy}` },
+            { type: "mrkdwn", text: `*Pré-approuvé par:*<@${userId}> le ${new Date().toLocaleDateString()}` },
+          ],
+        },
+        {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: "✅ *Pré-approuvé* - En attente des détails de la finance",
+            },
+          ],
+        }
+      ],
+      text: `Demande de fonds ${requestId} pré-approuvée - En attente des détails de la finance`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  // Notify finance team to fill details form
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: ":heavy_dollar_sign: Demande de Fonds à Traiter",
+            emoji: true,
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `Une demande de fonds a été pré-approuvée et nécessite vos détails pour finalisation.\n\n*ID:* ${requestId}\n*Montant:* ${request.amount} ${request.currency}\n*Motif:* ${request.reason}\n*Date requise:* ${request.requestedDate}\n*Pré-approuvé par:* <@${userId}>`,
+          },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Fournir les détails", emoji: true },
+              style: "primary",
+              value: requestId,
+              action_id: "fill_funding_details",
+            },
+          ],
+        },
+      ],
+      text: `Demande de fonds ${requestId} à traiter - Veuillez fournir les détails de paiement`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  // Notify requester of pre-approval
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: request.submittedBy,
+      text: `📝 Votre demande de fonds (ID: ${requestId}) a été pré-approuvée par <@${userId}>. L'équipe finance va maintenant traiter votre demande.`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  return createSlackResponse(200, "");
+}
+
+async function generateFundingApprovalPaymentModal(
+  context,
+  trigger_id,
+  messageTs,
+  requestId
+) {
+  // Find the funding request in the database
+  const caisse = await Caisse.findOne({
+    "fundingRequests.requestId": requestId,
+  });
+
+  if (!caisse) {
+    console.error(`Caisse not found for request ${requestId}`);
+    return;
+  }
+
+  const request = caisse.fundingRequests.find((r) => r.requestId === requestId);
+
+  if (!request) {
+    console.error(`Request ${requestId} not found`);
+    return;
+  }
+  const metadata = JSON.stringify({
+    requestId: requestId,
+    messageTs: messageTs,
+    channelId: process.env.SLACK_ADMIN_ID,
+    amount: request.amount, // Include amount
+    currency: request.currency, // Include currency
+    reason: request.reason, // Include reason
+    requestedDate: request.requestedDate, // Include requested date
+    submitterName: request.submitterName || request.submittedBy, // Include submitter name
+  });
+  // Bank options for dropdown (used later in handlePaymentMethodSelection)
+  const bankOptions = [
+    {
+      text: { type: "plain_text", text: "Banque Atlantique" },
+      value: "Banque Atlantique",
+    },
+    { text: { type: "plain_text", text: "Ecobank" }, value: "Ecobank" },
+    { text: { type: "plain_text", text: "SGCI" }, value: "SGCI" },
+    { text: { type: "plain_text", text: "NSIA Banque" }, value: "NSIA Banque" },
+    { text: { type: "plain_text", text: "BOA" }, value: "BOA" },
+    { text: { type: "plain_text", text: "Autre" }, value: "Autre" },
+  ];
+
+  // Create blocks for the modal
+  const blocks = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Approbation de demande de fonds*\nID: ${requestId}\nMontant: ${
+          request.amount
+        } ${request.currency}\nMotif: ${request.reason}\nDemandeur: ${
+          request.submitterName || request.submittedBy
+        }`,
+      },
+    },
+    {
+      type: "divider",
+    },
+    {
+      type: "input",
+      block_id: "payment_method",
+      label: { type: "plain_text", text: "Méthode de paiement" },
+      element: {
+        type: "radio_buttons",
+        action_id: "input_payment_method",
+        options: [
+          { text: { type: "plain_text", text: "Espèces" }, value: "cash" },
+          { text: { type: "plain_text", text: "Chèque" }, value: "cheque" },
+        ],
+        initial_option: {
+          text: { type: "plain_text", text: "Espèces" },
+          value: "cash",
+        },
+      },
+      dispatch_action: true, // Enable block_actions event on selection
+    },
+    {
+      type: "input",
+      block_id: "payment_notes",
+      optional: true,
+      label: { type: "plain_text", text: "Notes (optionnel)" },
+      element: {
+        type: "plain_text_input",
+        action_id: "input_payment_notes",
+        placeholder: {
+          type: "plain_text",
+          text: "Informations supplémentaires",
+        },
+      },
+    },
+  ];
+
+  const modal = {
+    type: "modal",
+    callback_id: "submit_finance_details",
+    private_metadata: metadata,
+    title: { type: "plain_text", text: "Détails financiers" },
+    submit: { type: "plain_text", text: "Soumettre" },
+    close: { type: "plain_text", text: "Annuler" },
+    blocks: blocks,
+  };
+
+  try {
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/views.open",
+      { trigger_id, view: modal },
+      process.env.SLACK_BOT_TOKEN
+    );
+    console.log(`Modal opened for request ${requestId}`);
+  } catch (error) {
+    console.error(`Error opening modal for ${requestId}:`, error);
+  }
+}
+
+
+async function handleSlackInteractions(request, context) {
+  context.log("🔄 Interaction Slack reçue !");
+  context.log("handleSlackInteractions function");
+
+  try {
+    const body = await request.text();
+    if (!verifySlackSignature(request, body)) {
+      return createSlackResponse(401, "Signature invalide");
+    }
+
+    const params = new URLSearchParams(body);
+    payload = JSON.parse(params.get("payload"));
+    context.log(`📥 Payload reçu : ${JSON.stringify(payload)}`);
+    switch (payload.type) {
+      case "view_submission":
+        console.log("va1");
+        //!$$$$$$$$$$$$$$
+    
+        if (payload.view.callback_id === "submit_finance_details") {
+          console.log("**4 submit_finance_details");
+         
+          // Immediate response to close modal
+          context.res = {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ response_action: "clear" }),
+          };
+
+          // Process in background
+          setImmediate(async () => {
+            return await handleFinanceDetailsSubmission(
+              payload,
+              context
+            );
+          });
+
+          return context.res;
+        }
+       if (payload.view.callback_id === "funding_approval_payment") {
+          
+          const processingMessage =await postSlackMessage(
+            "https://slack.com/api/chat.postMessage",
+            {
+              channel: process.env.SLACK_ADMIN_ID,
+              text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
+            },
+            process.env.SLACK_BOT_TOKEN
+          );
+          // Immediate response to close modal
+          context.res = {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ response_action: "clear" }),
+          };
+
+          // Process in background
+          setImmediate(async () => {
+            return await handleFundingApprovalPaymentSubmission(
+              payload,
+              context,
+              payload.user.name || payload.user.id,
+              processingMessage.ts
+            );
+          });
+
+          return context.res;
+        }
+      case "block_actions":
+      case "interactive_message":
+        const response1 = await handleBlockActions(payload, context);
+        context.log(`Setting context.res: ${JSON.stringify(response1)}`);
+        context.res = response1;
+        return response1;
+      default:
+        return createSlackResponse(400, "Type d'interaction non supporté");
+    }
+  } catch (error) {
+    context.log(`❌ Erreur globale: ${error.stack}`);
+
+    await postSlackMessage(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: process.env.SLACK_tech_CHANNEL_ID,
+        user: payload.user.id,
+        text: `❌ Erreur globale: ${error.stack}`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+  }
+}
+
+async function handleFinanceDetailsSubmission(payload, context) {
+  console.log("** handleFinanceDetailsSubmission");
+
+  const formData = payload.view.state.values;
+  const userId = payload.user.id;
+  const userName = payload.user.username || userId;
+  
+  const metadata = JSON.parse(payload.view.private_metadata);
+  const requestId = metadata.requestId;
+  const originalMessageTs = metadata.messageTs;
+  const originalChannelId = metadata.channelId;
+
+  // Find the funding request
+  const caisse = await Caisse.findOne({
+    "fundingRequests.requestId": requestId,
+  });
+  if (!caisse) {
+    console.error(`Caisse not found for request ${requestId}`);
+    return createSlackResponse(200, { response_action: "errors", errors: { payment_method: "Demande introuvable" } });
+  }
+  
+  const requestIndex = caisse.fundingRequests.findIndex(
+    (r) => r.requestId === requestId
+  );
+  if (requestIndex === -1) {
+    console.error(`Request ${requestId} not found`);
+    return createSlackResponse(200, { response_action: "errors", errors: { payment_method: "Demande introuvable" } });
+  }
+
+  const request = caisse.fundingRequests[requestIndex];
+  
+  // Extract form data - align with the actual form structure from generateFundingApprovalPaymentModal
+  const paymentMethod = formData.payment_method.input_payment_method.selected_option.value;
+  const paymentNotes = formData.payment_notes?.input_payment_notes?.value || "";
+  console.log("userId11",userId);
+  console.log("userName",userName);
+
+   // Build payment details object
+   const paymentDetails = {
+    method: paymentMethod,
+    notes: paymentNotes,
+    approvedBy: userId,
+     approvedAt: new Date(),
+     filledBy: userId,
+     filledByName: userName,
+     filledAt: new Date()
+  };
+  // Add cheque details if method is cheque
+  if (paymentMethod === "cheque") {
+    if (
+      !formData.cheque_number ||
+      !formData.cheque_bank ||
+      !formData.cheque_date ||
+      !formData.cheque_order
+    ) {
+      await postSlackMessageWithRetry(
+        "https://slack.com/api/chat.postEphemeral",
+        {
+          channel: userId,
+          user: userId,
+          text: "❌ Veuillez remplir tous les champs requis pour le chèque (numéro, banque, date, ordre).",
+        },
+        process.env.SLACK_BOT_TOKEN
+      );
+      return createSlackResponse(200, "");
+    }
+
+    paymentDetails.cheque = {
+      number: formData.cheque_number.input_cheque_number.value,
+      bank: formData.cheque_bank.input_cheque_bank.selected_option.value,
+      date: formData.cheque_date.input_cheque_date.selected_date,
+      order: formData.cheque_order.input_cheque_order.value,
+    };
+  }
+  request.paymentDetails = paymentDetails;
+
+  // Update workflow status
+  request.status = "Détails fournis";
+  request.workflow.stage = "details_submitted";
+  request.workflow.history.push({
+    stage: "details_submitted",
+    timestamp: new Date(),
+    actor: userId,
+    details: "Détails financiers fournis"
+  });
+
+  await caisse.save();
+  
+  // Update finance team message
+  if (originalMessageTs && originalChannelId) {
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.update",
+      {
+        channel: originalChannelId,
+        ts: originalMessageTs,
+        blocks: [
+          {
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: ":heavy_dollar_sign: Demande de Fonds (Détails Fournis)",
+              emoji: true,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*ID:* ${requestId}\n*Montant:* ${request.amount} ${request.currency}\n*Motif:* ${request.reason}\n\n✅ *Détails fournis par <@${userId}>*\n*Méthode:* ${getPaymentMethodText(paymentMethod)}\n*Notes:* ${paymentNotes || "Aucune"}`,
+            },
+          },
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: "✅ *Détails complétés* - En attente d'approbation finale",
+              },
+            ],
+          }
+        ],
+        text: `Demande de fonds ${requestId} - Détails fournis, en attente d'approbation finale`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+  }
+
+  // Sync to Excel
+  try {
+    await syncCaisseToExcel(caisse, requestId);
+  } catch (error) {
+    console.error(`Excel sync failed: ${error.message}`);
+  }
+
+  // Create rich notification for admin final approval
+  await postSlackMessageWithRetry(
+    "https://slack.com/api/chat.postMessage",
+    {
+      channel: process.env.SLACK_ADMIN_ID,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: ":heavy_dollar_sign: Demande de Fonds - Approbation Finale",
+            emoji: true,
+          },
+        },
+        {
+          type: "divider",
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*ID:*\n${requestId}` },
+            { type: "mrkdwn", text: `*Montant:*\n${request.amount} ${request.currency}` },
+            { type: "mrkdwn", text: `*Motif:*\n${request.reason}` },
+            { type: "mrkdwn", text: `*Demandeur:*\n${request.submitterName || request.submittedBy}` },
+            { type: "mrkdwn", text: `*Méthode:*\n${getPaymentMethodText(paymentMethod)}` },
+            { type: "mrkdwn", text: `*Notes:*\n${paymentNotes || "Aucune"}` },
+            { type: "mrkdwn", text: `*Détails fournis par:*\n<@${userId}>` }
+          ],
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Approuver", emoji: true },
+              style: "primary",
+              value: requestId,
+              action_id: "funding_approval_payment",
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Demander Révision", emoji: true },
+              style: "danger",
+              value: requestId,
+              action_id: "request_revision_funding",
+            },
+          ],
+        },
+      ],
+      text: `Demande de fonds ${requestId} - Approbation finale requise`,
+    },
+    process.env.SLACK_BOT_TOKEN
+  );
+
+  return createSlackResponse(200, { response_action: "clear" });
+}
+
+async function handleFundingApprovalPaymentSubmission(
+  payload,
+  context,
+  userName,
+  messageTs
+) {
+  const formData = payload.view.state.values;
+  const privateMetadata = JSON.parse(payload.view.private_metadata);
+  console.log("privateMetadata", privateMetadata);
+  const requestId = privateMetadata.requestId;
+  const userId = userName || payload.user.id;
+  const originalMessageTs = privateMetadata.messageTs; // Original message timestamp
+  const channelId = privateMetadata.channelId || process.env.SLACK_ADMIN_ID; // Channel ID
+  const amount = privateMetadata.amount; // Use metadata
+  const currency = privateMetadata.currency; // Use metadata
+  const reason = privateMetadata.reason; // Use metadata
+  const requestedDate = privateMetadata.requestedDate; // Use metadata
+  const submitterName = privateMetadata.submitterName; // Use metadata
+
+  // Get payment method
+  const paymentMethod =
+    formData.payment_method.input_payment_method.selected_option.value;
+  const paymentNotes = formData.payment_notes?.input_payment_notes?.value || "";
+
+  // Build payment details object
+  const paymentDetails = {
+    method: paymentMethod,
+    notes: paymentNotes,
+    approvedBy: userId,
+    approvedAt: new Date(),
+  };
+
+  // Add cheque details if method is cheque
+  if (paymentMethod === "cheque") {
+    if (
+      !formData.cheque_number ||
+      !formData.cheque_bank ||
+      !formData.cheque_date ||
+      !formData.cheque_order
+    ) {
+      await postSlackMessageWithRetry(
+        "https://slack.com/api/chat.postEphemeral",
+        {
+          channel: userId,
+          user: userId,
+          text: "❌ Veuillez remplir tous les champs requis pour le chèque (numéro, banque, date, ordre).",
+        },
+        process.env.SLACK_BOT_TOKEN
+      );
+      return createSlackResponse(200, "");
+    }
+
+    paymentDetails.cheque = {
+      number: formData.cheque_number.input_cheque_number.value,
+      bank: formData.cheque_bank.input_cheque_bank.selected_option.value,
+      date: formData.cheque_date.input_cheque_date.selected_date,
+      order: formData.cheque_order.input_cheque_order.value,
+    };
+  }
+
+  try {
+    // Process the funding approval with payment details
+    await processFundingApprovalWithPayment(
+      requestId,
+      paymentMethod,
+      userId,
+      paymentDetails
+    );
+
+    // Delete the processing message
+    if (messageTs) {
+      await postSlackMessageWithRetry(
+        "https://slack.com/api/chat.delete",
+        {
+          channel: channelId,
+          ts: messageTs,
+        },
+        process.env.SLACK_BOT_TOKEN
+      );
+    }
+
+    // Update the original message in the admin channel
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.update",
+      {
+        channel: channelId,
+        ts: originalMessageTs, // Use the original message timestamp
+        blocks: [
+          {
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: ":heavy_dollar_sign: Demande de Fonds ",
+              emoji: true,
+            },
+          },
+          {
+            type: "divider",
+          },
+          {
+            type: "section",
+            fields: [
+              { type: "mrkdwn", text: `*ID:*\n${requestId}` },
+              { type: "mrkdwn", text: `*Montant:*\n${amount} ${currency}` },
+              { type: "mrkdwn", text: `*Motif:*\n${reason}` },
+              { type: "mrkdwn", text: `*Date requise:*\n${requestedDate}` },
+              {
+                type: "mrkdwn",
+                text: `*Demandeur:*\n${submitterName || userId}`,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Date d'approbation:*\n${new Date().toLocaleDateString()}`,
+              },
+            ],
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `✅ Approuvé par <@${userId}> (Méthode: ${
+                paymentMethod === "cash" ? "Espèces" : "Chèque"
+              })`,
+            },
+          },
+        ],
+        text: `Demande ${requestId} approuvée par ${userId}`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+
+    // Send confirmation message to the user
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postMessage",
+      {
+        channel: userId,
+        text: `✅ Demande ${requestId} approuvée avec succès (Méthode: ${
+          paymentMethod === "cash" ? "Espèces" : "Chèque"
+        })`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+
+    return createSlackResponse(200, "");
+  } catch (error) {
+    console.error("Error processing funding approval:", error);
+    // Delete the processing message if there's an error
+    if (messageTs) {
+      await postSlackMessageWithRetry(
+        "https://slack.com/api/chat.delete",
+        {
+          channel: channelId,
+          ts: messageTs,
+        },
+        process.env.SLACK_BOT_TOKEN
+      );
+    }
+
+    await postSlackMessageWithRetry(
+      "https://slack.com/api/chat.postEphemeral",
+      {
+        channel: userId,
+        user: userId,
+        text: `❌ Erreur lors de l'approbation: ${error.message}`,
+      },
+      process.env.SLACK_BOT_TOKEN
+    );
+
+    return createSlackResponse(200, "");
+  }
+}
