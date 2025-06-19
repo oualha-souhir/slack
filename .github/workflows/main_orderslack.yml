@@ -65,9 +65,10 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4312B886EEE1479CB30BB70B67984D96 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_5D45EA3C34B24554B446BE3D08C3BD04 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9DF943DF2C1C49DCA6C0086B844EC7C1 }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: 'Run Azure Functions Action'
         uses: Azure/functions-action@v1
@@ -76,4 +77,3 @@ jobs:
           app-name: 'orderSlack'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          

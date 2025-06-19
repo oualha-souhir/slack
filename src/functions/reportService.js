@@ -22,6 +22,7 @@ async function  generateReport(context) {
     return acc;
   }, {});
   
+  
   const pendingOrders = orders.filter((o) => o.statut === "En attente").length;
 
   const orderData = orders.map((o) => {
