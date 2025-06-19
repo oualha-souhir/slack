@@ -29,7 +29,7 @@ jobs:
       id: fa
       with:
         app-name: 'orderSlack'
-        slot-name: 'staging'  # Add this line for staging deployment
+                # slot-name: 'staging'  # Add this line for staging deployment
         package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-        # publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_30351266894A420A9978EFAE62A31D31 }}
-        publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_staging }}
+        publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_30351266894A420A9978EFAE62A31D31 }}
+                # publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_staging }}
