@@ -3,10 +3,13 @@
 .git*
 .vscode
 local.settings.json
-test
-.nyc_output
-coverage
-node_modules/@types
+test/
+.nyc_output/
+coverage/
+node_modules/@types/
 *.log
 .env
 .DS_Store
+README.md
+.gitignore
+package-lock.json
