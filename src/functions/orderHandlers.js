@@ -662,7 +662,7 @@ async function handleOrderSlackApi(request, context) {
 		const isUserAdmin = await isAdminUser(userId);
 
 		// ********************* $$$ ******************************************* */
-		if (command === "/caisse") {
+		if (command === "/caiss-test") {
 			// if (command === "/caisse-test") {
 			const isUserAdmin = await isAdminUser(userId);
 			const isUserFinance = await isFinanceUser(userId);
@@ -978,7 +978,7 @@ async function handleOrderSlackApi(request, context) {
 
 			return;
 			// ********************* $$$ ******************************************* */
-		} else if (command == "/payment") {
+		} else if (command == "/payment-test") {
 			// } else if (command == "/payment-test") {
 			if (text.toLowerCase().includes("montant")) {
 				context.log(`Received payment text: "${text}"`);
@@ -1222,7 +1222,7 @@ async function handleOrderSlackApi(request, context) {
 
 			// ********************* $$$ ******************************************* */
 			// } else if (command == "/order") {
-		} else if (command == "/order") {
+		} else if (command == "/order-test") {
 
 			if (!text.trim()) {
 				console.log("** no text");
