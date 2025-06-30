@@ -16,15 +16,6 @@ jobs:
     - name: 'Checkout GitHub Action'
       uses: actions/checkout@v4
     
-    - name: 'Configure WEBSITE_RUN_FROM_PACKAGE setting'
-      uses: azure/CLI@v1
-      with:
-        azcliversion: 2.30.0
-        inlineScript: |
-          az functionapp config appsettings set \
-            --name $AZURE_FUNCTIONAPP_NAME \
-            --resource-group $AZURE_RESOURCE_GROUP \
-            --settings WEBSITE_RUN_FROM_PACKAGE=1
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
