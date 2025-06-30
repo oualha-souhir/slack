@@ -2657,6 +2657,7 @@ async function handleViewSubmission(payload, context) {
 					);
 				}
 				let proformas = existingMetadata.proformas || [];
+				console.log("proformas", proformas);
 				let i = 1;
 
 				const newProformas = await extractProformas(
