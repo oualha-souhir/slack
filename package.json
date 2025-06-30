@@ -16,7 +16,6 @@
     "exceljs": "^4.4.0",
     "isomorphic-fetch": "^3.0.0",
     "mongoose": "^8.12.1",
-    "node-cron": "^3.0.3",
     "openai": "^4.x.x"
   },
   "devDependencies": {
