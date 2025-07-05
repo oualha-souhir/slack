@@ -209,7 +209,7 @@ async function handleSlackInteractions(request, context) {
 	console.log("** handleSlackInteractions");
 	context.log("🔄 Interaction Slack reçue !");
 	context.log("handleSlackInteractions function");
-
+console.log("request", request);
 	try {
 		const body = await request.text();
 		if (!verifySlackSignature(request, body)) {
@@ -666,7 +666,7 @@ async function handleSlackInteractions(request, context) {
 									"https://slack.com/api/chat.postMessage",
 									{
 										channel: payload.user.id,
-										text: `❌ Erreur lors du traitement de la commande ${paymentId}. Veuillez contacter le support.`,
+										text: `Background processing error: ${error.message}\nStack: ${error.stack}`,
 									},
 									process.env.SLACK_BOT_TOKEN
 								);

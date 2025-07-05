@@ -89,7 +89,7 @@ async function syncPaymentRequestToExcel(paymentRequest) {
 
     const siteId = await getSiteId();
     const driveId = await getDriveId(siteId);
-    const tableName = process.env.PAYMENT_TABLE_NAME || "PaymentRequestsTable"; // New table name for payment requests
+    const tableName = process.env.PAYMENT_TABLE_NAME || ""; // New table name for payment requests
 
       
     const fileName = "payments_database.xlsx"; // Replace with your new Excel file name

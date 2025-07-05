@@ -1,24 +1,30 @@
 {
-  "name": "slack-order-management",
-  "version": "1.0.0",
-  "description": "",
-  "main": "src/functions/index.js",
-  "scripts": {
-    "start": "func start",
-    "test": "echo \"No tests yet...\""
-  },
-  "dependencies": {
-    "@azure/functions": "^4.7.0",
-    "@azure/identity": "^4.9.0",
-    "@microsoft/microsoft-graph-client": "^3.0.7",
-    "axios": "^1.8.2",
-    "dotenv": "^16.4.7",
-    "exceljs": "^4.4.0",
-    "isomorphic-fetch": "^3.0.0",
-    "mongoose": "^8.12.1",
-    "openai": "^4.x.x"
-  },
-  "devDependencies": {
-    "azure-functions-core-tools": "^4.x"
-  }
+    "name": "slack-order-management",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "scripts": {
+        "start": "func start",
+        "test": "echo \"No tests yet...\"",
+        "deploy": "func azure functionapp publish orderSlack --build remote --force"
+    },
+    "dependencies": {
+        "@azure/functions": "^4.7.0",
+        "@azure/identity": "^4.9.0",
+        "@microsoft/microsoft-graph-client": "^3.0.7",
+        "@slack/web-api": "^7.9.3",
+        "axios": "^1.8.2",
+        "dotenv": "^16.4.7",
+        "exceljs": "^4.4.0",
+        "isomorphic-fetch": "^3.0.0",
+        "mongoose": "^8.12.1",
+        "node-fetch": "^3.3.2",
+        "openai": "^4.89.0"
+    },
+    "devDependencies": {
+        "azure-functions-core-tools": "^4.0.7317"
+    }
 }

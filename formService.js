@@ -51,7 +51,9 @@ async function handleEditProforma(payload, context) {
 	try {
 		// Extract data from the button value
 		const { orderId, proformaIndex } = JSON.parse(payload.actions[0].value);
-
+		console.log("payload@@@", payload);
+		const msgts = payload.container.message_ts;
+		console.log("msgts", msgts);
 		// Fetch the order
 		const order = await Order.findOne({ id_commande: orderId });
 		if (!order) {
@@ -283,6 +285,7 @@ async function handleEditProforma(payload, context) {
 					proformaIndex,
 					existingUrls: proforma.urls || [],
 					existingFileIds: proforma.file_ids || [],
+					msgts: msgts, // Store the message timestamp for updates
 				}),
 			};
 
@@ -323,7 +326,8 @@ async function handleProformaValidationRequest(payload, context) {
 				text: "❌ Erreur : Commande non trouvée.",
 			});
 		}
-
+		const msgts = payload.container.message_ts;
+		console.log("msgts", msgts);
 		// Check if a proforma is already validated
 		const alreadyValidated = order.proformas.some((p) => p.validated);
 		if (alreadyValidated) {
@@ -350,6 +354,7 @@ async function handleProformaValidationRequest(payload, context) {
 							proformaIndex: value.proformaIndex,
 							proformaName: value.proformaName, // Optional, for display
 							proformaAmount: value.proformaAmount, // Optional, for display
+							msgts:msgts
 						}),
 						title: {
 							type: "plain_text",
@@ -2753,7 +2758,8 @@ async function handleDeleteProformaConfirmation(payload, context) {
 	try {
 		// Extract data from the button value
 		const { orderId, proformaIndex } = JSON.parse(payload.actions[0].value);
-
+		const msgts = payload.container.message_ts;
+		console.log("msgts", msgts);
 		// Fetch the order
 		const order = await Order.findOne({ id_commande: orderId });
 		if (!order) {
@@ -2815,7 +2821,7 @@ async function handleDeleteProformaConfirmation(payload, context) {
 						},
 					},
 				],
-				private_metadata: JSON.stringify({ orderId, proformaIndex }),
+				private_metadata: JSON.stringify({ orderId, proformaIndex, msgts }),
 			};
 
 			const response = await postSlackMessage(
@@ -6534,12 +6540,14 @@ async function validateProforma(payload, context) {
 		if (comment) {
 			proformaToValidate.validationComment = comment;
 		}
+		console.log("proformaToValidate", proformaToValidate);
 
 		// Save the updated order
 		await order.save();
+		console.log("Notifying admin about proforma submission... 1");
 
 		// Notify both admin and achat channels with updated message
-		await notifyAdminProforma(order, context, proformaIndex);
+		await notifyAdminProforma(context,order, "", proformaIndex);
 
 		// // Post a confirmation message to the thread
 		// const slackResponse = await postSlackMessage(
@@ -6624,10 +6632,11 @@ async function validateProforma(payload, context) {
 	}
 }
 
-// New function to handle proforma submission
+// New function to handle proforma submission proforma_submission
 async function handleProformaSubmission(payload, context) {
 	console.log("** handleProformaSubmission");
-	const { orderId } = JSON.parse(payload.view.private_metadata);
+	const { orderId, msgts } = JSON.parse(payload.view.private_metadata);
+	console.log("msgts&", msgts);
 	const values = payload.view.state.values;
 	context.log("payload11112", payload);
 
@@ -6690,8 +6699,9 @@ async function handleProformaSubmission(payload, context) {
 			)} ${proformaDataArray[0].devise})`;
 		}
 		try {
+			console.log("Notifying admin about proforma submission...");
 			// Notify admin
-			await notifyAdminProforma(updatedOrder, context);
+			await notifyAdminProforma(context,updatedOrder, msgts);
 		} catch (notifyError) {
 			context.log(`WARNING: Admin notification failed: ${notifyError.message}`);
 			// Continue execution even if admin notification fails
@@ -6712,8 +6722,8 @@ async function handleProformaSubmission(payload, context) {
 			"https://slack.com/api/chat.postMessage",
 			{
 				channel: process.env.SLACK_ACHAT_CHANNEL_ID,
-				// text: `Error in proforma submission: ${error.message}`,
-				text: "❌ Veuillez charger au moins une proforma avant de continuer.",
+				text: `Error in proforma submission: ${error.message}`,
+				// text: "❌ Veuillez charger au moins une proforma avant de continuer.",
 			},
 			process.env.SLACK_BOT_TOKEN
 		);

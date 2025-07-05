@@ -24,7 +24,7 @@ app.http("orderSlackApi", {
 	authLevel: "anonymous",
 	handler: async (request, context) => {
 		try {
-										console.log("** STAGING");
+			console.log("** VERSION 1.0.0 **");
 			// setupDelayMonitoring();
 			// setupReporting(context);
 			console.log("⚡ Order Management System is running!");
@@ -64,36 +64,46 @@ app.http("slackInteractions", {
 	},
 });
 
-app.timer("delayMonitoring", {
-	// schedule: "*/3 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
+if (process.env.NODE_ENV === "production") {
+	console.log("🚀 Production environment detected - registering timers");
 
-	schedule: "0 0 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
-	handler: async (timer, context) => {
-		context.log("Running delay monitoring1111");
+	app.timer("delayMonitoring", {
+		// schedule: "*/3 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
 
-		await checkPendingOrderDelays(context);
-		await checkPaymentDelays(context);
-		await checkProformaDelays(context);
-		context.log("Running delay monitoringéééé");
+		schedule: "0 0 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
+		handler: async (timer, context) => {
+			context.log("Running delay monitoring1111");
 
-		context.log("Delay monitoring completed");
-	},
-});
+			await checkPendingOrderDelays(context);
+			await checkPaymentDelays(context);
+			await checkProformaDelays(context);
+			context.log("Running delay monitoringéééé");
 
-app.timer("dailyReport", {
-	schedule: "0 5 9 * * *", // Daily at 9:05 AM
+			context.log("Delay monitoring completed");
+		},
+	});
 
-	handler: async (timer, context) => {
-		context.log("Running daily report");
-		await generateReport(context); 
-		await analyzeTrends(context);
-		await handleAICommand(
-			context, // Assuming logger is correctly defined
-			openai, // OpenAI client instance
-			Order, // Mongoose model for orders
-			notifyUserAI, // Function for sending notifications
-			createSlackResponse // Function for formatting Slack responses
-		);
-		context.log("Daily report completed");
-	},
-});
+	app.timer("dailyReport", {
+		schedule: "0 5 9 * * *", // Daily at 9:05 AM
+
+		handler: async (timer, context) => {
+			context.log("Running daily report");
+			await generateReport(context);
+			await analyzeTrends(context);
+			await handleAICommand(
+				context, // Assuming logger is correctly defined
+				openai, // OpenAI client instance
+				Order, // Mongoose model for orders
+				notifyUserAI, // Function for sending notifications
+				createSlackResponse // Function for formatting Slack responses
+			);
+			context.log("Daily report completed");
+		},
+	});
+} else {
+	console.log(
+		`🔧 Non-production environment (${
+			process.env.NODE_ENV || "undefined"
+		}) detected - timers disabled`
+	);
+}

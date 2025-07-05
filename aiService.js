@@ -64,7 +64,7 @@ async function parseOrderFromText(text, context) {
       `;
 
 		const timeoutPromise = new Promise((_, reject) =>
-			setTimeout(() => reject(new Error("Request timed out")), 2000)
+			setTimeout(() => reject(new Error("Request timed out")), 15000)
 		);
 
 		const openaiPromise = openai.chat.completions.create({

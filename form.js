@@ -8,7 +8,33 @@ const {
 	getCurrencies,
 	getFournisseurOptions,
 } = require("./config");
+let fetch;
+const { WebClient } = require("@slack/web-api");
 
+// Initialize the Slack client
+const client = new WebClient(process.env.SLACK_BOT_TOKEN);
+(async () => {
+	fetch = (await import("node-fetch")).default;
+})();
+async function shareFileWithChannel(fileId, channelId, token) {
+	const response = await fetch("https://slack.com/api/files.sharedPublicURL", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ***REMOVED***`, // Use the user token here
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({ file: fileId }),
+	});
+
+	const result = await response.json();
+
+	if (!result.ok) {
+		throw new Error(`Failed to share file with channel: ${result.error}`);
+	}
+
+	console.log(`File ${fileId} shared successfully.`);
+	return result.file.permalink_public || result.file.url_private;
+}
 const UNIT_OPTIONS = [
 	{ text: { type: "plain_text", text: "Pièce" }, value: "piece" },
 	{ text: { type: "plain_text", text: "m²" }, value: "m2" },
@@ -226,7 +252,7 @@ async function generateOrderForm(
 				element: {
 					type: "file_input",
 					action_id: `input_article_photos_1`,
-					filetypes: ["jpg", "jpeg", "png", "gif", "webp"],
+					filetypes: ["jpg", "jpeg", "png", "gif", "webp", "pdf"],
 					max_files: 5,
 				},
 				hint: {
@@ -334,7 +360,7 @@ async function generateOrderForm(
 				element: {
 					type: "file_input",
 					action_id: `input_article_photos_${articleIndex}`,
-					filetypes: ["jpg", "jpeg", "png", "gif", "webp"],
+					filetypes: ["jpg", "jpeg", "png", "gif", "webp", "pdf"],
 					max_files: 5,
 				},
 				hint: {
@@ -425,7 +451,7 @@ function generateArticleBlocks(index) {
 			element: {
 				type: "file_input",
 				action_id: `input_article_photos_${index}`,
-				filetypes: ["jpg", "jpeg", "png", "gif", "webp"],
+				filetypes: ["jpg", "jpeg", "png", "gif", "webp", "pdf"],
 				max_files: 5,
 			},
 			hint: {
@@ -1072,6 +1098,9 @@ async function generatePaymentForm({
 async function proforma_form(payload, context) {
 	console.log("** proforma_form");
 	const orderId = payload.actions[0].value; // Extract order ID from the button
+	console.log("payloadmmm", payload);
+	const msgts = payload.container.message_ts;
+	console.log("msgtsmm", msgts);
 	//  context.log(`Opening proforma form for order: ${orderId}`);
 	// Fetch the order from the database
 	const order = await Order.findOne({ id_commande: orderId });
@@ -1253,7 +1282,7 @@ async function proforma_form(payload, context) {
 				},
 			},
 		],
-		private_metadata: JSON.stringify({ orderId }), // Pass orderId to submission handler
+		private_metadata: JSON.stringify({ orderId, msgts: msgts }), // Pass orderId to submission handler
 	};
 
 	try {
@@ -1355,6 +1384,476 @@ function isValidUrl(string) {
 	}
 }
 
+// async function extractProformas(formData, context, i, userId) {
+// 	console.log("** extractProformas");
+// 	const urls = [];
+// 	const file_ids = [];
+// 	let totalPages = 0;
+
+// 	const designation = formData.proforma_designation?.designation_input?.value;
+// 	const amountString = formData.proforma_amount?.input_proforma_amount?.value;
+// 	const validationResult = await validateProformaAmount(amountString);
+// 	console.log("!validationResult.valid", !validationResult.valid);
+// 	let fournisseur =
+// 		formData.proforma_fournisseur?.fournisseur_input?.selected_option?.text
+// 			?.text || "";
+// 	console.log("proforma_fournisseur (dropdown):", fournisseur);
+
+// 	if (!validationResult.valid) {
+// 		let slackResponse = await postSlackMessage(
+// 			"https://slack.com/api/chat.postMessage",
+// 			{ channel: userId, text: validationResult.error },
+// 			process.env.SLACK_BOT_TOKEN
+// 		);
+// 		if (!slackResponse.ok) context.log(`${slackResponse.error}`);
+// 		return validationResult;
+// 	}
+
+// 	const proformaFiles = formData.proforma_file?.file_upload?.files || [];
+
+// 	console.log(
+// 		"proformaFiles.length",
+// 		proformaFiles.length,
+// 		"proformaFiles",
+// 		proformaFiles
+// 	);
+// 	if (proformaFiles.length > 0) {
+// 		for (const file of proformaFiles) {
+// 			const fileInfo = await getFileInfo(file.id, process.env.SLACK_BOT_TOKEN);
+// 			console.log("fileInfo", fileInfo);
+// 			console.log("file", file);
+
+// 			const userToken = process.env.SLACK_USER_OAUTH_TOKEN;
+// 			if (userToken) {
+// 				try {
+// 					const shareResponse = await fetch(
+// 						"https://slack.com/api/files.sharedPublicURL",
+// 						{
+// 							method: "POST",
+// 							headers: {
+// 								Authorization: `Bearer ${userToken}`,
+// 								"Content-Type": "application/json; charset=utf-8",
+// 							},
+// 							body: JSON.stringify({ file: file.id }),
+// 						}
+// 					);
+// 					const shareResult = await shareResponse.json();
+// 					console.log("shareResponse", shareResult); // Debug output
+// 					if (shareResult.ok) {
+// 						console.log(`File ${file.id} is now publicly shared.`);
+// 						const publicUrl =
+// 							fileInfo.permalink_public ||
+// 							fileInfo.permalink ||
+// 							fileInfo.url_private_download ||
+// 							fileInfo.url_private;
+
+// 						urls.push(publicUrl);
+// 					} else {
+// 						console.error(
+// 							`Failed to share file ${file.id}: ${shareResult.error}`
+// 						);
+// 						await postSlackMessage(
+// 							"https://slack.com/api/chat.postMessage",
+// 							{
+// 								channel: userId,
+// 								text: `⚠️ Échec du partage public du fichier ${file.name} (${shareResult.error}). Utilisation de l'URL privée.`,
+// 							},
+// 							process.env.SLACK_BOT_TOKEN
+// 						);
+// 						const publicUrl =
+// 							fileInfo.permalink ||
+// 							fileInfo.url_private_download ||
+// 							fileInfo.url_private;
+// 						urls.push(publicUrl);
+// 					}
+// 				} catch (error) {
+// 					console.error(`Error sharing file ${file.id}: ${error.message}`);
+// 					await postSlackMessage(
+// 						"https://slack.com/api/chat.postMessage",
+// 						{
+// 							channel: userId,
+// 							text: `⚠️ Erreur lors du partage du fichier ${file.name} (${error.message}). Utilisation de l'URL privée.`,
+// 						},
+// 						process.env.SLACK_BOT_TOKEN
+// 					);
+// 					const publicUrl =
+// 						fileInfo.permalink ||
+// 						fileInfo.url_private_download ||
+// 						fileInfo.url_private;
+// 					urls.push(publicUrl);
+// 				}
+// 			} else {
+// 				await postSlackMessage(
+// 					"https://slack.com/api/chat.postMessage",
+// 					{
+// 						channel: userId,
+// 						text: "⚠️ Le partage public des fichiers n'est pas configuré (token manquant). Utilisation de l'URL privée.",
+// 					},
+// 					process.env.SLACK_BOT_TOKEN
+// 				);
+// 				const publicUrl =
+// 					fileInfo.permalink ||
+// 					fileInfo.url_private_download ||
+// 					fileInfo.url_private;
+// 				urls.push(publicUrl);
+// 			}
+// 			file_ids.push(file.id);
+// 		}
+// 		totalPages += proformaFiles.length;
+// 	}
+
+// 	if (formData.proforma_url?.input_proforma_url?.value) {
+// 		const proformaUrl = formData.proforma_url.input_proforma_url.value.trim();
+// 		console.log("proformaUrl", proformaUrl);
+// 		if (proformaUrl && isValidUrl(proformaUrl)) {
+// 			urls.push(proformaUrl);
+// 			totalPages += 1;
+// 		} else if (proformaUrl) {
+// 			await postSlackMessage(
+// 				"https://slack.com/api/chat.postMessage",
+// 				{
+// 					channel: userId,
+// 					text: "⚠️ L'URL du justificatif n'est pas valide. Votre demande a été enregistrée sans l'URL.",
+// 				},
+// 				process.env.SLACK_BOT_TOKEN
+// 			);
+// 		}
+// 	}
+
+// 	if (urls.length === 0) return [];
+
+// 	if (!amountString) {
+// 		context.log("Proforma provided but no amount");
+// 		throw new Error("Veuillez fournir un montant pour la proforma.");
+// 	}
+
+// 	let amount = null;
+// 	let validCurrency = "";
+// 	if (amountString) {
+// 		const match = amountString.match(/(\d+(?:\.\d+)?)\s*([A-Za-z]+)/);
+// 		if (!match)
+// 			throw new Error(
+// 				`Format de montant invalide: ${amountString}. Utilisez '1000 XOF'.`
+// 			);
+// 		amount = parseFloat(match[1]);
+// 		const currency = match[2].toUpperCase();
+// 		console.log("currency2", currency);
+// 		const currencyOptions = await getCurrencies();
+// 		if (!currencyOptions || currencyOptions.length === 0) {
+// 			return {
+// 				valid: false,
+// 				error: "⚠️ Aucune devise valide trouvée dans la base de données.",
+// 			};
+// 		}
+// 		const validCurrencies = currencyOptions.map((opt) =>
+// 			opt.value.toUpperCase()
+// 		);
+// 		if (!validCurrencies.includes(currency)) {
+// 			return {
+// 				valid: false,
+// 				error: `⚠️ Devise non reconnue. Les devises acceptées sont: ${validCurrencies.join(
+// 					", "
+// 				)}.`,
+// 			};
+// 		}
+// 		validCurrency = currency;
+// 	}
+
+// 	let validated = i == 1 ? true : i == 0 ? false : undefined;
+// 	return [
+// 		{
+// 			file_ids,
+// 			urls,
+// 			nom: designation || `Proforma (${urls.length} pages)`,
+// 			montant: amount,
+// 			devise: validCurrency,
+// 			pages: totalPages,
+// 			validated,
+// 			fournisseur,
+// 		},
+// 	];
+// }
+// ...existing code...
+
+// async function extractProformas(formData, context, i, userId) {
+//     console.log("** extractProformas");
+//     // Initialize collections
+//     const urls = [];
+//     const file_ids = [];
+//     let totalPages = 0;
+
+//     // Get common fields
+//     const designation = formData.proforma_designation?.designation_input?.value;
+//     const amountString = formData.proforma_amount?.input_proforma_amount?.value;
+//     // Validate the amount and currency
+//     const validationResult = await validateProformaAmount(amountString);
+//     console.log("!validationResult.valid", !validationResult.valid);
+//     let fournisseur = "";
+//     if (
+//         formData.proforma_fournisseur?.fournisseur_input?.selected_option?.text
+//             ?.text
+//     ) {
+//         fournisseur =
+//             formData.proforma_fournisseur.fournisseur_input.selected_option.text.text;
+//         console.log("proforma_fournisseur (dropdown):", fournisseur);
+//     }
+//     if (!validationResult.valid) {
+//         let messageText = `${validationResult.error} `;
+//         let slackResponse = await postSlackMessage(
+//             "https://slack.com/api/chat.postMessage",
+//             { channel: userId, text: messageText },
+//             process.env.SLACK_BOT_TOKEN
+//         );
+
+//         if (!slackResponse.ok) {
+//             context.log(`${slackResponse.error}`);
+//         }
+
+//         return validationResult;
+//     }
+
+//     // Process file uploads
+//     const proformaFiles = formData.proforma_file?.file_upload?.files || [];
+//     console.log(
+//         "proformaFiles.length",
+//         proformaFiles.length,
+//         "proformaFiles",
+//         proformaFiles
+//     );
+
+//     // Array to store processed file data for database
+//     const processedFiles = [];
+
+//     if (proformaFiles.length > 0) {
+//         console.log(`Processing ${proformaFiles.length} proforma files...`);
+
+//         for (const file of proformaFiles) {
+//             try {
+//                 console.log(`Fetching file info for file ID: ${file.id}`);
+//                 const fileInfo = await getFileInfo(
+//                     file.id,
+//                     process.env.SLACK_BOT_TOKEN
+//                 );
+//                 console.log("File info retrieved:", fileInfo);
+
+//                 const privateUrl = fileInfo.url_private_download;
+//                 const filename = fileInfo.name;
+//                 const mimeType = fileInfo.mimetype;
+
+//                 console.log(`Downloading file from URL: ${privateUrl}`);
+
+//                 // Download the file from Slack
+//                 const response = await fetch(privateUrl, {
+//                     headers: {
+//                         Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+//                     },
+//                 });
+
+//                 const buffer = await response.buffer();
+//                 const fileSize = buffer.length;
+//                 console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+//                 // Upload file directly using uploadV2
+//                 console.log(`Uploading file to channel: ${filename}`);
+//                 const uploadResult = await client.files.uploadV2({
+//                     channel_id: process.env.SLACK_ADMIN_ID,
+//                     file: buffer,
+//                     filename: filename,
+//                     title: `Proforma uploaded by <@${userId}>`,
+//                     initial_comment: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+//                 });
+
+//                 console.log("File uploaded successfully:", uploadResult);
+
+//                 // Extract the uploaded file ID from the response
+//                 let uploadedFileId = null;
+//                 if (uploadResult.files && uploadResult.files.length > 0) {
+//                     // Handle nested files array structure
+//                     const firstFile = uploadResult.files[0];
+//                     if (firstFile.files && firstFile.files.length > 0) {
+//                         uploadedFileId = firstFile.files[0].id;
+//                     } else if (firstFile.id) {
+//                         uploadedFileId = firstFile.id;
+//                     }
+//                 }
+
+//                 if (!uploadedFileId) {
+//                     throw new Error("Could not extract file ID from upload response");
+//                 }
+
+//                 console.log("Uploaded file ID:", uploadedFileId);
+
+//                 // Fetch the file info to get permalink and other details
+//                 const uploadedFileInfo = await getFileInfo(
+//                     uploadedFileId,
+//                     process.env.SLACK_BOT_TOKEN
+//                 );
+//                 console.log("Uploaded file info:", uploadedFileInfo);
+
+//                 const filePermalink = uploadedFileInfo.permalink;
+//                 console.log("File permalink:", filePermalink);
+
+//                 // Optional: Send to specific colleagues via DM
+//                 const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+//                 for (const colleagueId of colleagueUserIds) {
+//                     try {
+//                         // await client.chat.postMessage({
+//                         //     channel: colleagueId, // Send as DM
+//                         //     text: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+//                         //     attachments: [
+//                         //         {
+//                         //             title: filename,
+//                         //             title_link: filePermalink,
+//                         //             text: "Click to view the uploaded file",
+//                         //             color: "good",
+//                         //         },
+//                         //     ],
+//                         // });
+//                         console.log(`Notification sent to colleague: ${colleagueId}`);
+//                     } catch (dmError) {
+//                         console.error(`Error sending DM to ${colleagueId}:`, dmError);
+//                     }
+//                 }
+
+//                 // Prepare file data for return (matching your schema)
+//                 const fileData = {
+//                     file_id: uploadedFileId,
+//                     filename: filename,
+//                     permalink: filePermalink,
+//                     url_private: uploadedFileInfo.url_private,
+//                     url_private_download: uploadedFileInfo.url_private_download,
+//                     size: fileSize,
+//                     mimetype: mimeType,
+//                     uploaded_by: userId,
+//                     uploaded_at: new Date(),
+//                     channel_id: process.env.SLACK_ADMIN_ID,
+//                 };
+
+//                 // Store file data for return
+//                 processedFiles.push(fileData);
+//                 console.log("File data prepared for return:", fileData);
+
+//                 // Store file reference for legacy support
+//                 file_ids.push(uploadedFileId);
+//                 urls.push(filePermalink);
+//                 totalPages += 1;
+//             } catch (error) {
+//                 console.error("Error processing file:", error.message);
+//                 console.error("Full error:", error);
+
+//                 // Send error notification to user
+//                 await postSlackMessage(
+//                     "https://slack.com/api/chat.postMessage",
+//                     {
+//                         channel: userId,
+//                         text: `⚠️ Erreur lors du traitement du fichier: ${error.message}`,
+//                     },
+//                     process.env.SLACK_BOT_TOKEN
+//                 );
+//             }
+//         }
+//     }
+
+//     // Process manual URL
+//     if (formData.proforma_url?.input_proforma_url?.value) {
+//         const proformaUrl = formData.proforma_url?.input_proforma_url?.value.trim();
+//         if (proformaUrl) {
+//             // Validate URL format
+//             if (isValidUrl(proformaUrl)) {
+//                 urls.push(proformaUrl);
+//                 totalPages += 1; // Count URL as 1 page
+//             } else if (!isValidUrl(proformaUrl)) {
+//                 // Send error message to user
+//                 await postSlackMessage(
+//                     "https://slack.com/api/chat.postMessage",
+//                     {
+//                         channel: userId,
+//                         text: "⚠️ L'URL du justificatif n'est pas valide. Votre demande a été enregistrée sans l'URL.",
+//                     },
+//                     process.env.SLACK_BOT_TOKEN
+//                 );
+//             }
+//         }
+//     }
+
+//     // If no proforma files or URL were provided, return an empty array
+//     if (urls.length === 0 && processedFiles.length === 0) {
+//         return [];
+//     }
+
+//     // Validation
+//     if (!amountString) {
+//         context.log("Proforma provided but no amount");
+//         throw new Error("Veuillez fournir un montant pour la proforma.");
+//     }
+
+//     // Parse amount
+//     let amount = null;
+//     let validCurrency = "";
+//     if (amountString) {
+//         const match = amountString.match(/(\d+(?:\.\d+)?)\s*([A-Za-z]+)/);
+//         if (!match) {
+//             throw new Error(
+//                 `Format de montant invalide: ${amountString}. Utilisez '1000 XOF'.`
+//             );
+//         }
+
+//         amount = parseFloat(match[1]);
+//         const currency = match[2].toUpperCase();
+//         console.log("currency2", currency);
+//         // Fetch valid currencies from DB
+//         const currencyOptions = await getCurrencies();
+//         if (!currencyOptions || currencyOptions.length === 0) {
+//             return {
+//                 valid: false,
+//                 error: "⚠️ Aucune devise valide trouvée dans la base de données.",
+//             };
+//         }
+
+//         const validCurrencies = currencyOptions.map((opt) =>
+//             opt.value.toUpperCase()
+//         );
+
+//         if (!validCurrencies.includes(currency.toUpperCase())) {
+//             return {
+//                 valid: false,
+//                 error: `⚠️ Devise non reconnue. Les devises acceptées sont: ${validCurrencies.join(
+//                     ", "
+//                 )}.`,
+//             };
+//         } else {
+//             validCurrency = currency;
+//         }
+//     }
+
+//     let validated;
+//     if (i == 1) {
+//         validated = true;
+//     } else if (i == 0) {
+//         validated = false;
+//     }
+
+//     // Return the processed file data directly for database saving
+//     // If we have processed files, return them; otherwise return legacy format
+//     if (processedFiles.length > 0) {
+//         return processedFiles; // Return array of file objects matching schema
+//     }
+
+//     // Legacy return format for URL-only proformas
+//     return [
+//         {
+//             file_ids,
+//             urls,
+//             nom: designation || `Proforma (${urls.length} pages)`,
+//             montant: amount,
+//             devise: validCurrency,
+//             pages: totalPages,
+//             validated: validated,
+//             fournisseur: fournisseur,
+//         },
+//     ];
+// }
 async function extractProformas(formData, context, i, userId) {
 	console.log("** extractProformas");
 	// Initialize collections
@@ -1394,17 +1893,149 @@ async function extractProformas(formData, context, i, userId) {
 
 	// Process file uploads
 	const proformaFiles = formData.proforma_file?.file_upload?.files || [];
+	console.log(
+		"proformaFiles.length",
+		proformaFiles.length,
+		"proformaFiles",
+		proformaFiles
+	);
+
+	// Array to store processed file data for database
+	const processedFiles = [];
+
 	if (proformaFiles.length > 0) {
+		console.log(`Processing ${proformaFiles.length} proforma files...`);
+
 		for (const file of proformaFiles) {
-			const fileInfo = await getFileInfo(file.id, process.env.SLACK_BOT_TOKEN);
-			urls.push(fileInfo.url_private);
-			file_ids.push(file.id);
+			try {
+				console.log(`Fetching file info for file ID: ${file.id}`);
+				const fileInfo = await getFileInfo(
+					file.id,
+					process.env.SLACK_BOT_TOKEN
+				);
+				console.log("File info retrieved:", fileInfo);
+
+				const privateUrl = fileInfo.url_private_download;
+				const filename = fileInfo.name;
+				const mimeType = fileInfo.mimetype;
+
+				console.log(`Downloading file from URL: ${privateUrl}`);
+
+				// Download the file from Slack
+				const response = await fetch(privateUrl, {
+					headers: {
+						Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+					},
+				});
+
+				const arrayBuffer = await response.arrayBuffer();
+				const buffer = Buffer.from(arrayBuffer);
+				const fileSize = buffer.length;
+				console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+				// Upload file directly using uploadV2
+				console.log(`Uploading file to channel: ${filename}`);
+				const uploadResult = await client.files.uploadV2({
+					channel_id: process.env.SLACK_ORDER_LOG_CHANNEL,
+					file: buffer,
+					filename: filename,
+					// title: `Proforma uploaded by <@${userId}>`,
+					// initial_comment: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+				});
+
+				console.log("File uploaded successfully:", uploadResult);
+
+				// Extract the uploaded file ID from the response
+				let uploadedFileId = null;
+				if (uploadResult.files && uploadResult.files.length > 0) {
+					// Handle nested files array structure
+					const firstFile = uploadResult.files[0];
+					if (firstFile.files && firstFile.files.length > 0) {
+						uploadedFileId = firstFile.files[0].id;
+					} else if (firstFile.id) {
+						uploadedFileId = firstFile.id;
+					}
+				}
+
+				if (!uploadedFileId) {
+					throw new Error("Could not extract file ID from upload response");
+				}
+
+				console.log("Uploaded file ID:", uploadedFileId);
+
+				// Fetch the file info to get permalink and other details
+				const uploadedFileInfo = await getFileInfo(
+					uploadedFileId,
+					process.env.SLACK_BOT_TOKEN
+				);
+				console.log("Uploaded file info:", uploadedFileInfo);
+
+				const filePermalink = uploadedFileInfo.permalink;
+				console.log("File permalink:", filePermalink);
+
+				// Optional: Send to specific colleagues via DM
+				const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+				for (const colleagueId of colleagueUserIds) {
+					try {
+						// await client.chat.postMessage({
+						//     channel: colleagueId, // Send as DM
+						//     text: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+						//     attachments: [
+						//         {
+						//             title: filename,
+						//             title_link: filePermalink,
+						//             text: "Click to view the uploaded file",
+						//             color: "good",
+						//         },
+						//     ],
+						// });
+						console.log(`Notification sent to colleague: ${colleagueId}`);
+					} catch (dmError) {
+						console.error(`Error sending DM to ${colleagueId}:`, dmError);
+					}
+				}
+
+				// Prepare file data for return (matching your schema)
+				// const fileData = {
+				//     file_id: uploadedFileId,
+				//     filename: filename,
+				//     permalink: filePermalink,
+				//     url_private: uploadedFileInfo.url_private,
+				//     url_private_download: uploadedFileInfo.url_private_download,
+				//     size: fileSize,
+				//     mimetype: mimeType,
+				//     uploaded_by: userId,
+				//     uploaded_at: new Date(),
+				//     channel_id: process.env.SLACK_ADMIN_ID,
+				// };
+
+				// // Store file data for return
+				// processedFiles.push(fileData);
+				// console.log("File data prepared for return:", fileData);
+
+				// Store file reference for legacy support
+				file_ids.push(uploadedFileId);
+				urls.push(filePermalink);
+				totalPages += 1;
+			} catch (error) {
+				console.error("Error processing file:", error.message);
+				console.error("Full error:", error);
+
+				// Send error notification to user
+				await postSlackMessage(
+					"https://slack.com/api/chat.postMessage",
+					{
+						channel: userId,
+						text: `⚠️ Erreur lors du traitement du fichier: ${error.message}`,
+					},
+					process.env.SLACK_BOT_TOKEN
+				);
+			}
 		}
-		totalPages += proformaFiles.length;
 	}
 
 	// Process manual URL
-
 	if (formData.proforma_url?.input_proforma_url?.value) {
 		const proformaUrl = formData.proforma_url?.input_proforma_url?.value.trim();
 		if (proformaUrl) {
@@ -1427,7 +2058,7 @@ async function extractProformas(formData, context, i, userId) {
 	}
 
 	// If no proforma files or URL were provided, return an empty array
-	if (urls.length === 0) {
+	if (urls.length === 0 && processedFiles.length === 0) {
 		return [];
 	}
 
@@ -1475,13 +2106,21 @@ async function extractProformas(formData, context, i, userId) {
 			validCurrency = currency;
 		}
 	}
+
 	let validated;
 	if (i == 1) {
 		validated = true;
 	} else if (i == 0) {
 		validated = false;
 	}
-	// Return single proforma entry with all pages
+
+	// Return the processed file data directly for database saving
+	// If we have processed files, return them; otherwise return legacy format
+	if (processedFiles.length > 0) {
+		return processedFiles; // Return array of file objects matching schema
+	}
+
+	// Legacy return format for URL-only proformas
 	return [
 		{
 			file_ids,
@@ -1496,6 +2135,7 @@ async function extractProformas(formData, context, i, userId) {
 	];
 }
 
+// ...existing code...
 function generatePaymentRequestForm(existingData = {}) {
 	console.log("** generatePaymentRequestForm");
 	const view = {

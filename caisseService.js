@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const { createSlackResponse } = require("./utils");
+const { createSlackResponse, getFileInfo } = require("./utils");
 const { Order, PaymentRequest, Caisse } = require("./db");
 const { bankOptions } = require("./form");
 const { checkFormErrors } = require("./aiService");
@@ -8,7 +8,10 @@ const axios = require("axios");
 require("dotenv").config();
 const { getSiteId, getDriveId, getGraphClient } = require("./excelReportORDER");
 const { getFileId } = require("./excelReportPAY");
+const { WebClient } = require("@slack/web-api");
 
+// Initialize the Slack client
+const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 // Generate Funding Request Modal
 async function generateFundingRequestForm(context, trigger_id, params) {
 	console.log("** generateFundingRequestForm");
@@ -1339,12 +1342,132 @@ async function handleFinanceDetailsSubmission(payload, context) {
 			);
 			return createSlackResponse(200, "");
 		}
-		// Extract file IDs from file_input
-		const fileIds =
-			formData.cheque_files?.input_cheque_files?.files?.map(
-				(file) => file.url_private
-			) || [];
-		console.log("File IDs:", fileIds);
+		// // Extract file IDs from file_input
+		// const fileIds =
+		// 	formData.cheque_files?.input_cheque_files?.files?.map(
+		// 		(file) => file.url_private
+		// 	) || [];
+		// console.log("File IDs:", fileIds);
+		const proofFiles = formData.cheque_files?.input_cheque_files?.files || [];
+		console.log(
+			"proofFiles.length",
+			proofFiles.length,
+			"proofFiles",
+			proofFiles
+		);
+		// Array to store processed payment proof URLs
+		const paymentProofs = [];
+		if (proofFiles.length > 0) {
+			console.log(`Processing ${proofFiles.length} payment proof files...`);
+
+			for (const file of proofFiles) {
+				try {
+					console.log(`Fetching file info for file ID: ${file.id}`);
+					const fileInfo = await getFileInfo(
+						file.id,
+						process.env.SLACK_BOT_TOKEN
+					);
+					console.log("File info retrieved:", fileInfo);
+
+					const privateUrl = fileInfo.url_private_download;
+					const filename = fileInfo.name;
+					const mimeType = fileInfo.mimetype;
+
+					console.log(`Downloading file from URL: ${privateUrl}`);
+
+					// Download the file from Slack
+					const response = await fetch(privateUrl, {
+						headers: {
+							Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+						},
+					});
+
+					const arrayBuffer = await response.arrayBuffer();
+					const buffer = Buffer.from(arrayBuffer);
+					const fileSize = buffer.length;
+					console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+					// Upload file directly using uploadV2
+					console.log(`Uploading file to channel: ${filename}`);
+					const uploadResult = await client.files.uploadV2({
+						channel_id: process.env.SLACK_ORDER_LOG_FINANCE_CHANNEL, // Same channel as proforma
+						file: buffer,
+						filename: filename,
+						// title: `Payment proof uploaded by <@${userId}>`,
+						// initial_comment: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+					});
+
+					console.log("File uploaded successfully:", uploadResult);
+
+					// Extract the uploaded file ID from the response
+					let uploadedFileId = null;
+					if (uploadResult.files && uploadResult.files.length > 0) {
+						// Handle nested files array structure
+						const firstFile = uploadResult.files[0];
+						if (firstFile.files && firstFile.files.length > 0) {
+							uploadedFileId = firstFile.files[0].id;
+						} else if (firstFile.id) {
+							uploadedFileId = firstFile.id;
+						}
+					}
+
+					if (!uploadedFileId) {
+						throw new Error("Could not extract file ID from upload response");
+					}
+
+					console.log("Uploaded file ID:", uploadedFileId);
+
+					// Fetch the file info to get permalink and other details
+					const uploadedFileInfo = await getFileInfo(
+						uploadedFileId,
+						process.env.SLACK_BOT_TOKEN
+					);
+					console.log("Uploaded file info:", uploadedFileInfo);
+
+					filePermalink = uploadedFileInfo.permalink;
+					console.log("File permalink:", filePermalink);
+
+					// Optional: Send to specific colleagues via DM
+					const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+					for (const colleagueId of colleagueUserIds) {
+						try {
+							// await client.chat.postMessage({
+							//     channel: colleagueId, // Send as DM
+							//     text: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+							//     attachments: [
+							//         {
+							//             title: filename,
+							//             title_link: filePermalink,
+							//             text: "Click to view the uploaded payment proof",
+							//             color: "good",
+							//         },
+							//     ],
+							// });
+							console.log(`Notification sent to colleague: ${colleagueId}`);
+						} catch (dmError) {
+							console.error(`Error sending DM to ${colleagueId}:`, dmError);
+						}
+					}
+
+					// Store the permalink for payment proofs
+					paymentProofs.push(filePermalink);
+				} catch (error) {
+					console.error("Error processing payment proof file:", error.message);
+					console.error("Full error:", error);
+
+					// // Send error notification to user
+					// await postSlackMessage(
+					// 	"https://slack.com/api/chat.postMessage",
+					// 	{
+					// 		channel: userId,
+					// 		text: `⚠️ Erreur lors du traitement du fichier de preuve de paiement: ${error.message}`,
+					// 	},
+					// 	process.env.SLACK_BOT_TOKEN
+					// );
+				}
+			}
+		}
 		// Process URLs (comma-separated string to array)
 		const urlsString = formData.cheque_urls?.input_cheque_urls?.value || "";
 		const urls = urlsString
@@ -1360,7 +1483,7 @@ async function handleFinanceDetailsSubmission(payload, context) {
 			date: formData.cheque_date.input_cheque_date.selected_date,
 			order: formData.cheque_order.input_cheque_order.value,
 			urls: urls,
-			file_ids: fileIds,
+			file_ids: paymentProofs,
 		};
 	}
 
@@ -2040,7 +2163,7 @@ async function syncCaisseToExcel(caisse, requestId) {
 			const siteId = await getSiteId();
 			const driveId = await getDriveId(siteId);
 			const fileId = process.env.CAISSE_EXCEL_FILE_ID;
-			const tableName = "CaisseTable";
+			const tableName = process.env.CAISSE_TABLE_NAME || "";
 
 			const request = caisse.fundingRequests.find(
 				(r) => r.requestId === requestId

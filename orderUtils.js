@@ -8,13 +8,21 @@ const {
 	PaymentSequence,
 	Caisse,
 } = require("./db");
+const { WebClient } = require("@slack/web-api");
+
+// Initialize the Slack client
+const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 const {
 	processFundingApproval,
 	syncCaisseToExcel,
 	getProblemTypeText,
 	generateFundingDetailsBlocks,
 } = require("./caisseService");
-const { postSlackMessage, createSlackResponse } = require("./utils");
+const {
+	postSlackMessage,
+	createSlackResponse,
+	getFileInfo,
+} = require("./utils");
 const querystring = require("querystring");
 const {
 	notifyPayment,
@@ -214,7 +222,7 @@ async function generatePaymentRequestId() {
 
 	return `PAY/${year}/${month}/${String(seq.currentNumber).padStart(4, "0")}`;
 }
-function extractArticles(formData) {
+async function extractArticles(formData) {
 	console.log("** extractArticles");
 	const articles = [];
 	const quantityErrors = {};
@@ -264,15 +272,209 @@ function extractArticles(formData) {
 			formData[`article_photos_${articleIndex}`]?.[
 				`input_article_photos_${articleIndex}`
 			]?.files || [];
-		const photos = photoFiles.map((file) => ({
-			id: file.id,
-			name: file.name,
-			url: file.url_private,
-			permalink: file.permalink,
-			mimetype: file.mimetype,
-			size: file.size,
-			uploadedAt: new Date(),
-		}));
+
+		const photos = [];
+
+		// Process each photo file
+		// for (const file of photoFiles) {
+		// 	const userToken = process.env.SLACK_USER_OAUTH_TOKEN;
+		// 	let finalUrl =
+		// 		file.permalink || file.url_private_download || file.url_private;
+
+		// 	// Try to make file publicly accessible if user token is available
+		// 	if (userToken) {
+		// 		try {
+		// 			const shareResponse = await fetch(
+		// 				"https://slack.com/api/files.sharedPublicURL",
+		// 				{
+		// 					method: "POST",
+		// 					headers: {
+		// 						Authorization: `Bearer ${userToken}`,
+		// 						"Content-Type": "application/json; charset=utf-8",
+		// 					},
+		// 					body: JSON.stringify({ file: file.id }),
+		// 				}
+		// 			);
+		// 			const shareResult = await shareResponse.json();
+		// 			console.log("shareResponse", shareResult);
+
+		// 			if (shareResult.ok) {
+		// 				console.log(`File ${file.id} is now publicly shared.`);
+		// 				console.log(`Public permalink_public URL: ${shareResult.file.permalink_public}`);
+		// 				console.log(`Public URL: ${file.permalink_public}`);
+		// 				console.log(`Public permalink URL: ${file.permalink}`);
+
+		// 				// Use the public permalink if available
+		// 				finalUrl =
+		// 					file.permalink_public ||
+		// 					file.permalink ||
+		// 					file.url_private_download ||
+		// 					file.url_private;
+		// 				if (finalUrl == file.url_private_download &&
+		// 					finalUrl == file.url_private) {
+		// 					console.log(
+		// 						`Using fallback URL for file ${file.id}: ${finalUrl}`
+		// 					);
+		// 				}
+
+		// 			} else {
+		// 				console.error(
+		// 					`Failed to share file ${file.id}: ${shareResult.error}`
+		// 				);
+		// 				// Keep the original URL as fallback
+		// 				finalUrl =
+		// 					file.permalink || file.url_private_download || file.url_private;
+		// 			}
+		// 		} catch (error) {
+		// 			console.error(`Error sharing file ${file.id}: ${error.message}`);
+		// 			// Keep the original URL as fallback
+		// 			finalUrl =
+		// 				file.permalink || file.url_private_download || file.url_private;
+		// 		}
+		// 	}
+
+		// 	// Add photo to the photos array
+		// 	photos.push({
+		// 		id: file.id,
+		// 		name: file.name,
+		// 		url: finalUrl,
+		// 		url_private: file.url_private,
+		// 		permalink: file.permalink,
+		// 		mimetype: file.mimetype,
+		// 		size: file.size,
+		// 		uploadedAt: new Date(),
+		// 	});
+		// 	console.log(`Photo ${file.name} processed for article ${articleIndex}`);
+		// }
+
+		// console.log(`Processing ${proformaFiles.length} proforma files...`);
+
+		for (const file of photoFiles) {
+			try {
+				console.log(`Fetching file info for file ID: ${file.id}`);
+				const fileInfo = await getFileInfo(
+					file.id,
+					process.env.SLACK_BOT_TOKEN
+				);
+				console.log("File info retrieved:", fileInfo);
+
+				const privateUrl = fileInfo.url_private_download;
+				const filename = fileInfo.name;
+				const mimeType = fileInfo.mimetype;
+
+				console.log(`Downloading file from URL: ${privateUrl}`);
+
+				// Download the file from Slack
+				const response = await fetch(privateUrl, {
+					headers: {
+						Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+					},
+				});
+				const arrayBuffer = await response.arrayBuffer();
+				const buffer = Buffer.from(arrayBuffer);
+				const fileSize = buffer.length;
+				console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+				// Upload file directly using uploadV2
+				console.log(`Uploading file to channel: ${filename}`);
+				const uploadResult = await client.files.uploadV2({
+					channel_id: process.env.SLACK_ORDER_LOG_CHANNEL,
+					file: buffer,
+					filename: filename,
+					// title: `Proforma uploaded by <@${userId}>`,
+					// initial_comment: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+				});
+
+				console.log("File uploaded successfully:", uploadResult);
+
+				// Extract the uploaded file ID from the response
+				let uploadedFileId = null;
+				if (uploadResult.files && uploadResult.files.length > 0) {
+					// Handle nested files array structure
+					const firstFile = uploadResult.files[0];
+					if (firstFile.files && firstFile.files.length > 0) {
+						uploadedFileId = firstFile.files[0].id;
+					} else if (firstFile.id) {
+						uploadedFileId = firstFile.id;
+					}
+				}
+
+				if (!uploadedFileId) {
+					throw new Error("Could not extract file ID from upload response");
+				}
+
+				console.log("Uploaded file ID:", uploadedFileId);
+
+				// Fetch the file info to get permalink and other details
+				const uploadedFileInfo = await getFileInfo(
+					uploadedFileId,
+					process.env.SLACK_BOT_TOKEN
+				);
+				console.log("Uploaded file info:", uploadedFileInfo);
+
+				const filePermalink = uploadedFileInfo.permalink;
+				console.log("File permalink:", filePermalink);
+
+				// Optional: Send to specific colleagues via DM
+				const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+				for (const colleagueId of colleagueUserIds) {
+					try {
+						// await client.chat.postMessage({
+						//     channel: colleagueId, // Send as DM
+						//     text: `📎 New proforma file shared by <@${userId}>: ${filename}`,
+						//     attachments: [
+						//         {
+						//             title: filename,
+						//             title_link: filePermalink,
+						//             text: "Click to view the uploaded file",
+						//             color: "good",
+						//         },
+						//     ],
+						// });
+						console.log(`Notification sent to colleague: ${colleagueId}`);
+					} catch (dmError) {
+						console.error(`Error sending DM to ${colleagueId}:`, dmError);
+					}
+				}
+
+				// Prepare file data for return (matching your schema)
+				// const fileData = {
+				//     file_id: uploadedFileId,
+				//     filename: filename,
+				//     permalink: filePermalink,
+				//     url_private: uploadedFileInfo.url_private,
+				//     url_private_download: uploadedFileInfo.url_private_download,
+				//     size: fileSize,
+				//     mimetype: mimeType,
+				//     uploaded_by: userId,
+				//     uploaded_at: new Date(),
+				//     channel_id: process.env.SLACK_ADMIN_ID,
+				// };
+
+				// // Store file data for return
+				// processedFiles.push(fileData);
+				// console.log("File data prepared for return:", fileData);
+
+				// Store file reference for legacy support
+
+				// 	// Add photo to the photos array
+				photos.push({
+					id: uploadedFileId,
+					url: filePermalink,
+					uploadedAt: new Date(),
+				});
+				console.log(`Photo processed for article ${photos}`);
+
+				totalPages += 1;
+			} catch (error) {
+				console.error("Error processing file:", error.message);
+				console.error("Full error:", error);
+
+				// Send error notification to user
+			}
+		}
+		console.log(`aa Photo processed for article ${photos}`);
 
 		console.log(`Processing article ${articleIndex}:`, {
 			designation,
@@ -280,7 +482,9 @@ function extractArticles(formData) {
 			unit,
 			photosCount: photos.length,
 		});
-
+		console.log(
+			`Designation: ${designation}, Quantity: ${quantity}, Unit: ${unit}, Photos: ${photos}`
+		);
 		articles.push({
 			quantity: quantity,
 			unit: unit,
@@ -353,7 +557,8 @@ async function createAndSaveOrder(
 				productPhotos.push({
 					id: file.id,
 					name: file.name,
-					url: file.url_private,
+					url: file.permalink || file.url_private_download || file.url_private, // Use permalink first
+					url_private: file.url_private, // Keep private URL as backup
 					permalink: file.permalink,
 					mimetype: file.mimetype,
 					size: file.size,
@@ -1045,7 +1250,10 @@ async function handlePaymentModificationSubmission(payload, context) {
 			values.payment_proof_file.file_upload_proof.files.length > 0
 		) {
 			const fileUrls = values.payment_proof_file.file_upload_proof.files
-				.map((file) => file.permalink)
+				.map(
+					(file) =>
+						file.permalink || file.url_private_download || file.url_private
+				) // Use permalink first
 				.filter(
 					(url) =>
 						url && typeof url === "string" && !paymentProofs.includes(url)
@@ -1400,7 +1608,7 @@ async function handleDeleteProforma(payload, context) {
 	try {
 		console.log("** handleDeleteProforma");
 		// Extract data from the modal submission
-		const { orderId, proformaIndex } = JSON.parse(
+		const { orderId, proformaIndex, msgts } = JSON.parse(
 			payload.view.private_metadata
 		);
 
@@ -1436,16 +1644,17 @@ async function handleDeleteProforma(payload, context) {
 
 		// Save the updated order
 		await order.save();
+		console.log("Notifying admin about proforma submission... 2");
 
 		// Notify admin about the deletion
-		await notifyAdminProforma(order, context);
+		await notifyAdminProforma(context, order, msgts);
 
 		// Post confirmation message to achat channel
 		await postSlackMessage(
 			"https://slack.com/api/chat.postMessage",
 			{
 				channel: process.env.SLACK_ACHAT_CHANNEL_ID,
-				text: `✅ Proforma supprimée: *${deletedProforma.nom}* - ${deletedProforma.montant} ${deletedProforma.devise} pour la commande ${orderId}`,
+				text: `✅ Proforma supprimée par <@${payload.user.id}>: *${deletedProforma.nom}* - ${deletedProforma.montant} ${deletedProforma.devise} pour la commande ${orderId}`,
 			},
 			process.env.SLACK_BOT_TOKEN
 		);
@@ -1468,8 +1677,10 @@ async function handleEditProformaSubmission(payload, context, userId) {
 	try {
 		console.log("** handleEditProformaSubmission");
 		const { view } = payload;
-		const { orderId, proformaIndex, existingUrls, existingFileIds } =
+		const { orderId, proformaIndex, existingUrls, existingFileIds, msgts } =
 			JSON.parse(view.private_metadata);
+		console.log("msgts", msgts);
+		console.log("view.private_metadata", view.private_metadata);
 
 		// Extract form values
 		const designation =
@@ -1478,9 +1689,9 @@ async function handleEditProformaSubmission(payload, context, userId) {
 			view.state.values.proforma_amount.input_proforma_amount.value;
 
 		const fournisseurOption =
-            view.state.values.proforma_fournisseur.fournisseur_input.selected_option;
-        const fournisseur = fournisseurOption ? fournisseurOption.text.text : "";
-        
+			view.state.values.proforma_fournisseur.fournisseur_input.selected_option;
+		const fournisseur = fournisseurOption ? fournisseurOption.text.text : "";
+
 		console.log("fournisseur", fournisseur);
 		console.log("amountInput", amountInput);
 
@@ -1558,8 +1769,10 @@ async function handleEditProformaSubmission(payload, context, userId) {
 		const newFiles = view.state.values.proforma_file?.file_upload?.files || [];
 		if (newFiles.length > 0) {
 			for (const file of newFiles) {
-				updatedUrls.push(file.url_private); // Add file URL to URLs
-				updatedFileIds.push(file.id); // Add file ID to file_ids
+				updatedUrls.push(
+					file.permalink || file.url_private_download || file.url_private
+				); // Use permalink first
+				updatedFileIds.push(file.id);
 			}
 		}
 
@@ -1590,9 +1803,10 @@ async function handleEditProformaSubmission(payload, context, userId) {
 		if (!updatedOrder) {
 			throw new Error(`Failed to update proforma for order ${orderId}`);
 		}
+		console.log("Notifying admin about proforma submission... 3");
 
 		// Update the Slack message with the new proforma details
-		await notifyAdminProforma(updatedOrder, context);
+		await notifyAdminProforma(context, updatedOrder, msgts);
 
 		return {
 			response_action: "clear",
@@ -2507,7 +2721,7 @@ async function handleViewSubmission(payload, context) {
 				const todayObj = new Date();
 				selectedDateObj.setHours(0, 0, 0, 0);
 				todayObj.setHours(0, 0, 0, 0);
-
+				console.log("formData", formData);
 				if (!selectedDate || selectedDateObj < todayObj) {
 					// Send a direct message to the user explaining the error
 					try {
@@ -2549,7 +2763,7 @@ async function handleViewSubmission(payload, context) {
 				}
 
 				// Extract articles and check quantities
-				const { articles, quantityErrors } = extractArticles(formData);
+				const { articles, quantityErrors } = await extractArticles(formData);
 				if (Object.keys(quantityErrors).length > 0) {
 					return { response_action: "errors", errors: quantityErrors };
 				}
@@ -2657,7 +2871,6 @@ async function handleViewSubmission(payload, context) {
 					);
 				}
 				let proformas = existingMetadata.proformas || [];
-				console.log("proformas", proformas);
 				let i = 1;
 
 				const newProformas = await extractProformas(
@@ -2678,7 +2891,50 @@ async function handleViewSubmission(payload, context) {
 						createdAt: new Date(),
 					}));
 				}
+				// Process new proformas if they exist
+				let processedProformas = [];
+				if (
+					newProformas &&
+					Array.isArray(newProformas) &&
+					newProformas.length > 0
+				) {
+					// Convert to proper schema format
+					processedProformas = newProformas.map((proforma) => {
+						// Handle file data properly
+						const proformaData = {
+							file_id: proforma.file_id || proforma.fileData?.file_id,
+							filename: proforma.filename || proforma.fileData?.filename,
+							permalink: proforma.permalink || proforma.fileData?.permalink,
+							url_private:
+								proforma.url_private || proforma.fileData?.url_private,
+							url_private_download:
+								proforma.url_private_download ||
+								proforma.fileData?.url_private_download,
+							size: proforma.size || proforma.fileData?.size,
+							mimetype: proforma.mimetype || proforma.fileData?.mimetype,
+							uploaded_by:
+								proforma.uploaded_by ||
+								proforma.fileData?.uploaded_by ||
+								userId,
+							uploaded_at: new Date(),
+							channel_id:
+								proforma.channel_id ||
+								proforma.fileData?.channel_id ||
+								channelId,
+						};
 
+						// Remove any undefined fields
+						Object.keys(proformaData).forEach((key) => {
+							if (proformaData[key] === undefined) {
+								delete proformaData[key];
+							}
+						});
+
+						return proformaData;
+					});
+
+					console.log("Processed proformas:", processedProformas);
+				}
 				console.log("proformas", proformas);
 				console.log("newProformas", newProformas);
 
@@ -2851,7 +3107,7 @@ async function handleViewSubmission(payload, context) {
 					"https://slack.com/api/chat.postMessage",
 					{
 						channel: payload.user.id,
-						text: `❌ Erreur lors du traitement de la proforma pour la commande ${orderId}. Veuillez contacter le support.`,
+						text: `Background processing error for proforma submission (order: ${orderId}): ${error.message}\nStack: ${error.stack}`,
 					},
 					process.env.SLACK_BOT_TOKEN
 				);
@@ -2980,10 +3236,153 @@ async function handleViewSubmission(payload, context) {
 					formData.amount_paid?.input_amount_paid?.value
 				);
 				console.log("amountPaid", amountPaid);
-				const paymentProofs =
-					formData.payment_proof_unique?.input_payment_proof?.files?.map(
-						(file) => file.url_private
-					) || [];
+				// const paymentProofs =
+				// 	formData.payment_proof_unique?.input_payment_proof?.files?.map(
+				// 		(file) =>
+				// 			file.permalink || file.url_private_download || file.url_private // Use permalink first
+				// 	) || [];
+
+				// ...existing code...
+
+				// Replace the existing paymentProofs line with this:
+				const proofFiles =
+					formData.payment_proof_unique?.input_payment_proof?.files || [];
+				console.log(
+					"proofFiles.length",
+					proofFiles.length,
+					"proofFiles",
+					proofFiles
+				);
+				const userId = payload.user.id;
+				// Array to store processed payment proof URLs
+				const paymentProofs = [];
+
+				if (proofFiles.length > 0) {
+					console.log(`Processing ${proofFiles.length} payment proof files...`);
+
+					for (const file of proofFiles) {
+						try {
+							console.log(`Fetching file info for file ID: ${file.id}`);
+							const fileInfo = await getFileInfo(
+								file.id,
+								process.env.SLACK_BOT_TOKEN
+							);
+							console.log("File info retrieved:", fileInfo);
+
+							const privateUrl = fileInfo.url_private_download;
+							const filename = fileInfo.name;
+							const mimeType = fileInfo.mimetype;
+
+							console.log(`Downloading file from URL: ${privateUrl}`);
+
+							// Download the file from Slack
+							const response = await fetch(privateUrl, {
+								headers: {
+									Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+								},
+							});
+
+							const arrayBuffer = await response.arrayBuffer();
+							const buffer = Buffer.from(arrayBuffer);
+							const fileSize = buffer.length;
+							console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+							// Upload file directly using uploadV2
+							console.log(`Uploading file to channel: ${filename}`);
+							const uploadResult = await client.files.uploadV2({
+								channel_id: process.env.SLACK_ORDER_LOG_FINANCE_CHANNEL, // Same channel as proforma
+								file: buffer,
+								filename: filename,
+								// title: `Payment proof uploaded by <@${userId}>`,
+								// initial_comment: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+							});
+
+							console.log("File uploaded successfully:", uploadResult);
+
+							// Extract the uploaded file ID from the response
+							let uploadedFileId = null;
+							if (uploadResult.files && uploadResult.files.length > 0) {
+								// Handle nested files array structure
+								const firstFile = uploadResult.files[0];
+								if (firstFile.files && firstFile.files.length > 0) {
+									uploadedFileId = firstFile.files[0].id;
+								} else if (firstFile.id) {
+									uploadedFileId = firstFile.id;
+								}
+							}
+
+							if (!uploadedFileId) {
+								throw new Error(
+									"Could not extract file ID from upload response"
+								);
+							}
+
+							console.log("Uploaded file ID:", uploadedFileId);
+
+							// Fetch the file info to get permalink and other details
+							const uploadedFileInfo = await getFileInfo(
+								uploadedFileId,
+								process.env.SLACK_BOT_TOKEN
+							);
+							console.log("Uploaded file info:", uploadedFileInfo);
+
+							const filePermalink = uploadedFileInfo.permalink;
+							console.log("File permalink:", filePermalink);
+
+							// Optional: Send to specific colleagues via DM
+							const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+							for (const colleagueId of colleagueUserIds) {
+								try {
+									// await client.chat.postMessage({
+									//     channel: colleagueId, // Send as DM
+									//     text: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+									//     attachments: [
+									//         {
+									//             title: filename,
+									//             title_link: filePermalink,
+									//             text: "Click to view the uploaded payment proof",
+									//             color: "good",
+									//         },
+									//     ],
+									// });
+									console.log(`Notification sent to colleague: ${colleagueId}`);
+								} catch (dmError) {
+									console.error(`Error sending DM to ${colleagueId}:`, dmError);
+								}
+							}
+
+							// Store the permalink for payment proofs
+							paymentProofs.push(filePermalink);
+						} catch (error) {
+							console.error(
+								"Error processing payment proof file:",
+								error.message
+							);
+							console.error("Full error:", error);
+
+							// Send error notification to user
+							await postSlackMessage(
+								"https://slack.com/api/chat.postMessage",
+								{
+									channel: userId,
+									text: `⚠️ Erreur lors du traitement du fichier de preuve de paiement: ${error.message}`,
+								},
+								process.env.SLACK_BOT_TOKEN
+							);
+						}
+					}
+				} else {
+					// Fallback to the original logic if no files to process
+					const fallbackProofs =
+						formData.payment_proof_unique?.input_payment_proof?.files?.map(
+							(file) =>
+								file.permalink || file.url_private_download || file.url_private
+						) || [];
+					paymentProofs.push(...fallbackProofs);
+				}
+
+				// ...existing code...
 				const paymentUrl =
 					formData.paiement_url?.input_paiement_url?.value || null;
 
@@ -2991,7 +3390,7 @@ async function handleViewSubmission(payload, context) {
 				const metadata = JSON.parse(payload.view.private_metadata);
 				console.log("metadata11", metadata);
 				const orderId = metadata.orderId;
-				const userId = payload.user.id;
+
 				const slackToken = process.env.SLACK_BOT_TOKEN;
 
 				// Validate inputs for non-cash payments
@@ -3000,6 +3399,21 @@ async function handleViewSubmission(payload, context) {
 					(!paymentProofs || paymentProofs.length === 0) &&
 					(!paymentUrl || paymentUrl.trim() === "")
 				) {
+					console.log(
+						"❌ Error: No payment proof or URL provided for non-cash payment"
+					);
+					console.log("paymentMode", paymentMode);
+					console.log("paymentProofs", paymentProofs);
+					console.log("paymentUrl", paymentUrl);
+					console.log(
+						"(!paymentProofs || paymentProofs.length === 0)",
+						!paymentProofs || paymentProofs.length === 0
+					);
+					console.log(
+						"(!paymentUrl || paymentUrl.trim() === '')",
+						!paymentUrl || paymentUrl.trim() === ""
+					);
+
 					await postSlackMessage(
 						"https://slack.com/api/chat.postMessage",
 						{
@@ -3672,6 +4086,37 @@ async function extractAndValidateUrl(url, justificatifs, userId, slackToken) {
 
 	return true; // Empty string after trimming is also valid
 }
+
+// Add this helper function to convert private URLs to public permalinks
+async function getPublicFileUrl(fileId, slackToken) {
+	try {
+		const response = await axios.get(
+			`https://slack.com/api/files.info?file=${fileId}`,
+			{
+				headers: {
+					Authorization: `Bearer ${slackToken}`,
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+			}
+		);
+
+		if (response.data.ok && response.data.file) {
+			// Return permalink if available, otherwise fall back to url_private
+			return (
+				response.data.file.permalink ||
+				response.data.file.url_private_download ||
+				response.data.file.url_private
+			);
+		}
+		return null;
+	} catch (error) {
+		console.error(`Error getting file info for ${fileId}:`, error);
+		return null;
+	}
+}
+
+// Update the extractProformas function (this should be in form.js)
+// You'll need to modify where proforma files are processed to use permalinks
 // 2. Create a function to extract justificatifs from form data
 async function extractJustificatifs(formData, context, userId, slackToken) {
 	try {
@@ -3679,20 +4124,142 @@ async function extractJustificatifs(formData, context, userId, slackToken) {
 		const justificatifs = [];
 
 		// Extract file uploads
-		if (formData.justificatif?.input_justificatif?.files?.length > 0) {
-			console.log(
-				"formData.justificatif?.input_justificatif?.files?.length",
-				formData.justificatif?.input_justificatif?.files?.length
-			);
-			formData.justificatif.input_justificatif.files.forEach((file) => {
-				justificatifs.push({
-					url: file.url_private,
-					type: "file",
-					createdAt: new Date(),
-				});
-			});
-		}
+		// if (formData.justificatif?.input_justificatif?.files?.length > 0) {
+		// 	formData.justificatif.input_justificatif.files.forEach((file) => {
+		// 		justificatifs.push({
+		// 			url: file.permalink || file.url_private_download || file.url_private, // Use permalink first
+		// 			url_private: file.url_private, // Keep private URL as backup
+		// 			type: "file",
+		// 			createdAt: new Date(),
+		// 		});
+		// 	});
+		// }
+		const proofFiles = formData.justificatif?.input_justificatif?.files || [];
+		console.log(
+			"proofFiles.length",
+			proofFiles.length,
+			"proofFiles",
+			proofFiles
+		);
+		// const userId = payload.user.id;
+		// Array to store processed payment proof URLs
+		const paymentProofs = [];
 
+		if (proofFiles.length > 0) {
+			console.log(`Processing ${proofFiles.length} payment proof files...`);
+
+			for (const file of proofFiles) {
+				try {
+					console.log(`Fetching file info for file ID: ${file.id}`);
+					const fileInfo = await getFileInfo(
+						file.id,
+						process.env.SLACK_BOT_TOKEN
+					);
+					console.log("File info retrieved:", fileInfo);
+
+					const privateUrl = fileInfo.url_private_download;
+					const filename = fileInfo.name;
+					const mimeType = fileInfo.mimetype;
+
+					console.log(`Downloading file from URL: ${privateUrl}`);
+
+					// Download the file from Slack
+					const response = await fetch(privateUrl, {
+						headers: {
+							Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+						},
+					});
+
+					const arrayBuffer = await response.arrayBuffer();
+					const buffer = Buffer.from(arrayBuffer);
+					const fileSize = buffer.length;
+					console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+					// Upload file directly using uploadV2
+					console.log(`Uploading file to channel: ${filename}`);
+					const uploadResult = await client.files.uploadV2({
+						channel_id: process.env.SLACK_ORDER_LOG_FINANCE_CHANNEL, // Same channel as proforma
+						file: buffer,
+						filename: filename,
+						// title: `Payment proof uploaded by <@${userId}>`,
+						// initial_comment: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+					});
+
+					console.log("File uploaded successfully:", uploadResult);
+
+					// Extract the uploaded file ID from the response
+					let uploadedFileId = null;
+					if (uploadResult.files && uploadResult.files.length > 0) {
+						// Handle nested files array structure
+						const firstFile = uploadResult.files[0];
+						if (firstFile.files && firstFile.files.length > 0) {
+							uploadedFileId = firstFile.files[0].id;
+						} else if (firstFile.id) {
+							uploadedFileId = firstFile.id;
+						}
+					}
+
+					if (!uploadedFileId) {
+						throw new Error("Could not extract file ID from upload response");
+					}
+
+					console.log("Uploaded file ID:", uploadedFileId);
+
+					// Fetch the file info to get permalink and other details
+					const uploadedFileInfo = await getFileInfo(
+						uploadedFileId,
+						process.env.SLACK_BOT_TOKEN
+					);
+					console.log("Uploaded file info:", uploadedFileInfo);
+
+					const filePermalink = uploadedFileInfo.permalink;
+					console.log("File permalink:", filePermalink);
+
+					// Optional: Send to specific colleagues via DM
+					const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
+
+					for (const colleagueId of colleagueUserIds) {
+						try {
+							// await client.chat.postMessage({
+							//     channel: colleagueId, // Send as DM
+							//     text: `📎 New payment proof shared by <@${userId}>: ${filename}`,
+							//     attachments: [
+							//         {
+							//             title: filename,
+							//             title_link: filePermalink,
+							//             text: "Click to view the uploaded payment proof",
+							//             color: "good",
+							//         },
+							//     ],
+							// });
+							console.log(`Notification sent to colleague: ${colleagueId}`);
+						} catch (dmError) {
+							console.error(`Error sending DM to ${colleagueId}:`, dmError);
+						}
+					}
+
+					// Store the permalink for justificatifs
+					justificatifs.push({
+						url: filePermalink,
+						type: "file",
+						createdAt: new Date(),
+					});
+				} catch (error) {
+					console.error("Error processing justificatif file:", error.message);
+					console.error("Full error:", error);
+
+					// // Send error notification to user
+					// await postSlackMessage(
+					// 	"https://slack.com/api/chat.postMessage",
+					// 	{
+					// 		channel: userId,
+					// 		text: `⚠️ Erreur lors du traitement du fichier de preuve de paiement: ${error.message}`,
+					// 	},
+					// 	process.env.SLACK_BOT_TOKEN
+					// );
+				}
+			}
+		}
 		// Process URL justificatif if provided
 		const justificatifUrl =
 			formData?.justificatif_url?.input_justificatif_url?.value;

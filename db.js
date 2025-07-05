@@ -56,11 +56,25 @@ const OrderSchema = new mongoose.Schema(
 				createdAt: { type: Date, default: Date.now },
 			},
 		],
+		 // New fields for specific channel message references
+        achatMessage: {
+            ts: { type: String }, // Message timestamp
+            createdAt: { type: Date, default: Date.now },
+        },
+        financeMessage: {
+            ts: { type: String }, // Message timestamp
+            createdAt: { type: Date, default: Date.now },
+        },
+        adminMessage: {
+            ts: { type: String }, // Message timestamp
+            createdAt: { type: Date, default: Date.now },
+        },
 		articles: [
 			{
 				quantity: { type: Number, required: false }, // Numeric quantity
 				unit: { type: String, required: false }, // Unit as a separate field
 				designation: { type: String, required: false },
+				
 				photos: [
 					{
 						id: String,

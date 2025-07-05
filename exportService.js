@@ -803,7 +803,7 @@ async function exportPaymentReport(
 						title: truncatedTitle,
 					},
 				],
-				channel_id: channelId,
+				channel_id: process.env.SLACK_ADMIN_ID,
 				initial_comment: `Here is your ${truncatedTitle}`,
 			},
 			{

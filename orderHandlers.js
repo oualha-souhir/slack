@@ -58,6 +58,7 @@ const querystring = require("querystring");
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
 });
+
 // src/orderUtils.js or src/notificationService.js
 // Helper function to create payment request blocks
 const getPaymentRequestBlocks = (paymentRequest, validatedBy) => [
@@ -75,7 +76,7 @@ const getPaymentRequestBlocks = (paymentRequest, validatedBy) => [
 		type: "section",
 		fields: [
 			{ type: "mrkdwn", text: `*Demandeur:*\n<@${paymentRequest.demandeur}>` },
-			{ type: "mrkdwn", text: `*Channel:*\n<#${paymentRequest.id_projet}>` },
+			{ type: "mrkdwn", text: `*Canal:*\n<#${paymentRequest.id_projet}>` },
 		],
 	},
 	{
@@ -253,7 +254,7 @@ Input text:
 `;
 
 		const timeoutPromise = new Promise((_, reject) =>
-			setTimeout(() => reject(new Error("Request timed out")), 2000)
+			setTimeout(() => reject(new Error("Request timed out")), 15000)
 		);
 
 		const openaiPromise = openai.chat.completions.create({
@@ -639,8 +640,6 @@ async function handleOrderSlackApi(request, context) {
 	});
 
 	try {
-		console.log("staging");
-		context.log("staging");
 
 		// const body = await request.json();
 		// if (body.type === "url_verification") {
@@ -660,10 +659,38 @@ async function handleOrderSlackApi(request, context) {
 			`Command: ${command}, Text: ${text}, User ID: ${userId}, User Name: ${userName}, Channel ID: ${channelId}`
 		);
 		const isUserAdmin = await isAdminUser(userId);
+		// Environment-based command mapping
+		const getCommandsForEnvironment = () => {
+			const env = process.env.NODE_ENV;
+			console.log(`**** Environment: ${env}`);
 
+			if (env === "staging") {
+				return {
+					caisse: "/caisse-test",
+					payment: "/payment-test",
+					order: "/order-test",
+				};
+			} else if (env === "dev") {
+				return {
+					caisse: "/caisset",
+					payment: "/paymentt",
+					order: "/ordert",
+				};
+			} else {
+				// production
+				return {
+					caisse: "/caisse",
+					payment: "/payment",
+					order: "/order",
+				};
+			}
+		};
+
+		const commands = getCommandsForEnvironment();
+		console.log("Commands:", commands);
 		// ********************* $$$ ******************************************* */
 
-			if (command === "/caisse") {
+		if (command === commands.caisse) {
 			const isUserAdmin = await isAdminUser(userId);
 			const isUserFinance = await isFinanceUser(userId);
 			if (!isUserAdmin && !isUserFinance) {
@@ -978,7 +1005,7 @@ async function handleOrderSlackApi(request, context) {
 
 			return;
 			// ********************* $$$ ******************************************* */
-			} else if (command == "/payment") {
+		} else if (command === commands.payment) {
 			if (text.toLowerCase().includes("montant")) {
 				context.log(`Received payment text: "${text}"`);
 				context.log("Starting AI payment parsing...");
@@ -1220,10 +1247,10 @@ async function handleOrderSlackApi(request, context) {
 			});
 
 			// ********************* $$$ ******************************************* */
-		} else if (command == "/order") {
+		} else if (command === commands.order) {
 			if (!text.trim()) {
 				console.log("** no text");
-				return createSlackResponse(200, {  
+				return createSlackResponse(200, {
 					response_type: "ephemeral",
 					blocks: [
 						{
@@ -2210,7 +2237,7 @@ Input text:
 `;
 
 		const timeoutPromise = new Promise((_, reject) =>
-			setTimeout(() => reject(new Error("Request timed out")), 10000)
+			setTimeout(() => reject(new Error("Request timed out")), 15000)
 		);
 
 		const openaiPromise = openai.chat.completions.create({

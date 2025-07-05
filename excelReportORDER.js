@@ -252,7 +252,7 @@ async function syncOrderToExcel(order) {
     const siteId = await getSiteId();
     const driveId = await getDriveId(siteId);
     const fileId = "6AD4369C-C1C5-46E3-873B-AECC71234DDF";
-    const tableName = process.env.EXCEL_TABLE_NAME || "OrdersTable";
+    const tableName = process.env.EXCEL_TABLE_NAME || "";
     
 
     // Get latest validated proforma
