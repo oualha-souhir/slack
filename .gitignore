@@ -45,4 +45,5 @@ __pycache__/
 # Azurite artifacts
 __blobstorage__
 __queuestorage__
-__azurite_db*__.json
+__azurite_db*__.jsontokens.txt
+..bfg-report/
