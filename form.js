@@ -16,25 +16,7 @@ const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 (async () => {
 	fetch = (await import("node-fetch")).default;
 })();
-async function shareFileWithChannel(fileId, channelId, token) {
-	const response = await fetch("https://slack.com/api/files.sharedPublicURL", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ***REMOVED***`, // Use the user token here
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({ file: fileId }),
-	});
 
-	const result = await response.json();
-
-	if (!result.ok) {
-		throw new Error(`Failed to share file with channel: ${result.error}`);
-	}
-
-	console.log(`File ${fileId} shared successfully.`);
-	return result.file.permalink_public || result.file.url_private;
-}
 const UNIT_OPTIONS = [
 	{ text: { type: "plain_text", text: "Pièce" }, value: "piece" },
 	{ text: { type: "plain_text", text: "m²" }, value: "m2" },
