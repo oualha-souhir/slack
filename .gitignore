@@ -47,3 +47,5 @@ __blobstorage__
 __queuestorage__
 __azurite_db*__.jsontokens.txt
 ..bfg-report/
+set-env.sh
+set-staging-env.sh
