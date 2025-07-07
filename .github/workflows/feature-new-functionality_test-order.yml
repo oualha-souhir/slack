@@ -1,39 +1,39 @@
-name: Build and deploy Node.js app to Azure Function App
+# name: Build and deploy Node.js app to Azure Function App
 
-on:
-  push:
-    branches:
-      - feature/new-functionality
-  workflow_dispatch:
+# on:
+#   push:
+#     branches:
+#       - feature/new-functionality
+#   workflow_dispatch:
 
-env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+# env:
+#   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
 
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    steps:
-    - name: 'Checkout GitHub Action'
-      uses: actions/checkout@v4
+# jobs:
+#   build-and-deploy:
+#     runs-on: ubuntu-latest
+#     steps:
+#     - name: 'Checkout GitHub Action'
+#       uses: actions/checkout@v4
     
       
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+#     - name: Setup Node.js
+#       uses: actions/setup-node@v4
+#       with:
+#         node-version: '20'
     
-    - name: 'npm install'
-      run: npm install
+#     - name: 'npm install'
+#       run: npm install
          
-    - name: 'Deploy to Azure Function'
-      uses: Azure/functions-action@v1
-      id: fa
-      with:
-        app-name: 'test-order'
-                # slot-name: 'staging'  # Add this line for staging deployment
-        package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-        publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_30351266894A420A9978EFAE62A31D31 }}
-                # publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_staging }}
+#     - name: 'Deploy to Azure Function'
+#       uses: Azure/functions-action@v1
+#       id: fa
+#       with:
+#         app-name: 'order-test'
+#                 # slot-name: 'staging'  # Add this line for staging deployment
+#         package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+#         publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_30351266894A420A9978EFAE62A31D31 }}
+#                 # publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_staging }}
 
 
 

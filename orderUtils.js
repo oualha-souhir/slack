@@ -3988,6 +3988,24 @@ async function handleViewSubmission(payload, context) {
 				slackToken
 			);
 			console.log("justificatifs", justificatifs);
+			// Check if justificatifs are provided
+			const hasFiles =
+				formData.justificatif?.input_justificatif?.files?.length > 0;
+			const hasUrl =
+				formData.justificatif_url?.input_justificatif_url?.value?.trim();
+
+			if (!hasFiles && !hasUrl) {
+				await postSlackMessage(
+					"https://slack.com/api/chat.postEphemeral",
+					{
+						channel: channelId,
+						user: payload.user.id,
+						text: `❌ Veuillez ajouter un justificatif (fichier ou URL).`,
+					},
+					process.env.SLACK_BOT_TOKEN
+				);
+				return { response_action: "clear" };
+			}
 			// Validation
 			const errors = {};
 			if (!title) errors.request_title = "Titre requis";

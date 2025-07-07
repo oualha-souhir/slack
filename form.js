@@ -2119,7 +2119,7 @@ async function extractProformas(formData, context, i, userId) {
 
 // ...existing code...
 function generatePaymentRequestForm(existingData = {}) {
-	console.log("** generatePaymentRequestForm");
+	console.log("** xx generatePaymentRequestForm");
 	const view = {
 		type: "modal",
 		callback_id: "payment_request_submission",
@@ -2204,10 +2204,9 @@ function generatePaymentRequestForm(existingData = {}) {
 			{
 				type: "input",
 				block_id: "justificatif",
-				optional: false,
+				optional: true,
 				label: {
 					type: "plain_text",
-
 					text: "Fichiers justificatifs",
 					emoji: true,
 				},
@@ -2224,7 +2223,7 @@ function generatePaymentRequestForm(existingData = {}) {
 				optional: true,
 				label: {
 					type: "plain_text",
-					text: "URL du justificatif (optionnel)",
+					text: "URL du justificatif",
 					emoji: true,
 				},
 				element: {

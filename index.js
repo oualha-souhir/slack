@@ -24,7 +24,7 @@ app.http("orderSlackApi", {
 	authLevel: "anonymous",
 	handler: async (request, context) => {
 		try {
-			console.log("** VERSION 1.0.0 **");
+			console.log("** VERSION 2.2.2 **");
 			// setupDelayMonitoring();
 			// setupReporting(context);
 			console.log("⚡ Order Management System is running!");

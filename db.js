@@ -74,7 +74,6 @@ const OrderSchema = new mongoose.Schema(
 				quantity: { type: Number, required: false }, // Numeric quantity
 				unit: { type: String, required: false }, // Unit as a separate field
 				designation: { type: String, required: false },
-				
 				photos: [
 					{
 						id: String,
@@ -223,7 +222,88 @@ const OrderSchema = new mongoose.Schema(
 		timestamps: false, // This adds createdAt and updatedAt fields automatically
 	}
 );
+OrderSchema.index({ date: -1 }); // For sorting
+OrderSchema.index({ statut: 1 }); // For status filtering
+/// Add post-save middleware to the OrderSchema
+OrderSchema.post("save", async function (doc) {
+	try {
+		if (doc && !doc.deleted) {
+			console.log(
+				`[Excel Integration] Post-save hook triggered for order: ${doc.id_commande}`
+			);
+			await syncOrderToExcel(doc).catch((err) => {
+				console.error(
+					`[Excel Integration] Excel sync failed but order saved to MongoDB: ${err.message}`
+				);
+			});
+		}
+	} catch (error) {
+		console.error(
+			`[Excel Integration] Error in post-save Excel sync: ${error}`
+		);
+	}
+});
 
+OrderSchema.post("findOneAndUpdate", async function (doc) {
+	console.log("111333");
+	try {
+		let orderDoc = doc;
+
+		// If doc is not provided or is an update result (e.g., { acknowledged: false }), query the document manually
+		if (
+			!orderDoc ||
+			!orderDoc.id_commande ||
+			typeof orderDoc.id_commande !== "string"
+		) {
+			orderDoc = await this.model.findOne(this.getQuery());
+		}
+
+		// Check if a valid document was found and it's not soft-deleted
+		if (orderDoc) {
+			console.log(
+				`[Excel Integration] Post-findOneAndUpdate hook triggered for order: ${orderDoc.id_commande}`
+			);
+			await syncOrderToExcel(orderDoc).catch((err) => {
+				console.error(
+					`[Excel Integration] Excel sync failed after update: ${err.message}`
+				);
+			});
+		} else {
+			console.log(
+				`[Excel Integration] No valid document found in post-findOneAndUpdate hook for query: ${JSON.stringify(
+					this.getQuery()
+				)}`
+			);
+		}
+	} catch (error) {
+		console.error(
+			`[Excel Integration] Error in post-findOneAndUpdate Excel sync: ${error.message}`,
+			error.stack
+		);
+	}
+});
+
+OrderSchema.post("updateOne", async function (doc) {
+	console.log("1112222");
+	try {
+		if (doc) {
+			console.log(
+				`[Excel Integration] Post-findOneAndUpdate hook triggered for order: ${doc.id_commande}`
+			);
+			await syncOrderToExcel(doc).catch((err) => {
+				console.error(
+					`[Excel Integration] Excel sync failed after update: ${err.message}`
+				);
+			});
+		}
+	} catch (error) {
+		console.error(
+			`[Excel Integration] Error in post-findOneAndUpdate Excel sync: ${error}`
+		);
+	}
+});
+const Order = mongoose.model("Order", OrderSchema);
+console.log("Order model defined:", Order !== undefined);
 // Define a schema for temporary form data
 const FormDataSchema = new mongoose.Schema({
 	key: { type: String, required: true, unique: true },
@@ -535,88 +615,7 @@ PaymentRequestSchema.post("insertOne", async function (doc) {
 });
 const PaymentRequest = mongoose.model("PaymentRequest", PaymentRequestSchema);
 
-OrderSchema.index({ date: -1 }); // For sorting
-OrderSchema.index({ statut: 1 }); // For status filtering
-/// Add post-save middleware to the OrderSchema
-OrderSchema.post("save", async function (doc) {
-	try {
-		if (doc && !doc.deleted) {
-			console.log(
-				`[Excel Integration] Post-save hook triggered for order: ${doc.id_commande}`
-			);
-			await syncOrderToExcel(doc).catch((err) => {
-				console.error(
-					`[Excel Integration] Excel sync failed but order saved to MongoDB: ${err.message}`
-				);
-			});
-		}
-	} catch (error) {
-		console.error(
-			`[Excel Integration] Error in post-save Excel sync: ${error}`
-		);
-	}
-});
 
-OrderSchema.post("findOneAndUpdate", async function (doc) {
-	console.log("111333");
-	try {
-		let orderDoc = doc;
-
-		// If doc is not provided or is an update result (e.g., { acknowledged: false }), query the document manually
-		if (
-			!orderDoc ||
-			!orderDoc.id_commande ||
-			typeof orderDoc.id_commande !== "string"
-		) {
-			orderDoc = await this.model.findOne(this.getQuery());
-		}
-
-		// Check if a valid document was found and it's not soft-deleted
-		if (orderDoc) {
-			console.log(
-				`[Excel Integration] Post-findOneAndUpdate hook triggered for order: ${orderDoc.id_commande}`
-			);
-			await syncOrderToExcel(orderDoc).catch((err) => {
-				console.error(
-					`[Excel Integration] Excel sync failed after update: ${err.message}`
-				);
-			});
-		} else {
-			console.log(
-				`[Excel Integration] No valid document found in post-findOneAndUpdate hook for query: ${JSON.stringify(
-					this.getQuery()
-				)}`
-			);
-		}
-	} catch (error) {
-		console.error(
-			`[Excel Integration] Error in post-findOneAndUpdate Excel sync: ${error.message}`,
-			error.stack
-		);
-	}
-});
-
-OrderSchema.post("updateOne", async function (doc) {
-	console.log("1112222");
-	try {
-		if (doc) {
-			console.log(
-				`[Excel Integration] Post-findOneAndUpdate hook triggered for order: ${doc.id_commande}`
-			);
-			await syncOrderToExcel(doc).catch((err) => {
-				console.error(
-					`[Excel Integration] Excel sync failed after update: ${err.message}`
-				);
-			});
-		}
-	} catch (error) {
-		console.error(
-			`[Excel Integration] Error in post-findOneAndUpdate Excel sync: ${error}`
-		);
-	}
-});
-const Order = mongoose.model("Order", OrderSchema);
-console.log("Order model defined:", Order !== undefined);
 // Command sequence schema
 const commandSequenceSchema = new mongoose.Schema({
 	yearMonth: { type: String, required: true, unique: true },

@@ -3985,7 +3985,7 @@ async function generatePaymentForm1(formData = {}) {
 				optional: true,
 				label: {
 					type: "plain_text",
-					text: "URL du justificatif (optionnel)",
+					text: "URL du justificatif",
 					emoji: true,
 				},
 				element: {
