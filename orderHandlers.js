@@ -22,6 +22,8 @@ const {
 	generateFundingRequestForm,
 	generateRequestDetailBlocks,
 	syncCaisseToExcel,
+	createCaisse,
+	transferFundsByType,
 } = require("./caisseService");
 
 const orderService = require("./orderService");
@@ -402,7 +404,7 @@ async function notifyAdminRefund(request, context) {
 				{
 					type: "divider",
 				},
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 				{
 					type: "context",
 					elements: [
@@ -460,7 +462,7 @@ async function notifyUserRefund(request, userId, context) {
 						emoji: true,
 					},
 				},
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 				{
 					type: "context",
 					elements: [
@@ -478,7 +480,7 @@ async function notifyUserRefund(request, userId, context) {
 }
 
 // Helper function to generate request detail blocks (if not already exists)
-// function generateRequestDetailBlocks(request) {
+// function generateRequestDetailBlocks(request, caisseType) {
 //   return [
 //     {
 //       type: "section",
@@ -640,7 +642,6 @@ async function handleOrderSlackApi(request, context) {
 	});
 
 	try {
-
 		// const body = await request.json();
 		// if (body.type === "url_verification") {
 		//   return { status: 200, body: body.challenge };
@@ -796,6 +797,57 @@ async function handleOrderSlackApi(request, context) {
 					status: 200,
 					body: "", // Empty response acknowledges receipt
 				});
+			}
+			const args = text.split(" ");
+			const subCommand = args[0];
+			if (subCommand === "create") {
+				console.log("Creating new caisse...");
+				const type = args[1];
+				const initialBalances = {
+					XOF: parseFloat(args[2] || 0),
+					USD: parseFloat(args[3] || 0),
+					EUR: parseFloat(args[4] || 0),
+				};
+				const caisse = await createCaisse(type, initialBalances);
+				return createSlackResponse(200, `✅ Caisse ${type} créée avec succès.`);
+			}
+
+			if (subCommand === "transfer") {
+				// Immediate response to Slack
+
+				console.log("Processing fund transfer request...");
+
+				try {
+					const fromCaisseType = args[1];
+					const toCaisseType = args[2];
+					const amount = parseFloat(args[3]);
+					const currency = args[4];
+					await transferFundsByType(
+						fromCaisseType,
+						toCaisseType,
+						amount,
+						currency,
+						context
+					);
+					console.log("finish. ");
+					console.log(
+						`Transfer from ${fromCaisseType} to ${toCaisseType} of ${amount} ${currency} completed.`
+					);
+					return createSlackResponse(
+						200,
+						`✅ Transfert de ${amount} ${currency} effectué avec succès.`
+					);
+				} catch (error) {
+					console.error("Error processing /caisset command:", error.message);
+					await postSlackMessageWithRetry(
+						"https://slack.com/api/chat.postMessage",
+						{
+							channel: channelId,
+							text: `❌ Erreur lors du traitement de la commande : ${error.message}`,
+						},
+						process.env.SLACK_BOT_TOKEN
+					);
+				}
 			}
 
 			context.res = {

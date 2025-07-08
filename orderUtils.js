@@ -1352,8 +1352,16 @@ async function handlePaymentModificationSubmission(payload, context) {
 				0
 			);
 			const totalAmountDue = await calculateTotalAmountDue(entityId, context);
+			// Validate to prevent negative remaining amount
+			const remainingAmount = totalAmountDue - totalAmountPaid;
+			if (remainingAmount < 0) {
+				throw new Error(
+					`Overpayment detected: Payment of ${totalAmountPaid} exceeds total amount due of ${totalAmountDue}.`
+				);
+			}
+
 			entity.amountPaid = totalAmountPaid;
-			entity.remainingAmount = totalAmountDue - totalAmountPaid;
+			entity.remainingAmount = remainingAmount;
 			entity.paymentDone = entity.remainingAmount <= 0;
 			entity.payments.paymentStatus =
 				entity.remainingAmount == 0 ? "Payé" : paymentStatus;
@@ -1362,7 +1370,7 @@ async function handlePaymentModificationSubmission(payload, context) {
 
 			await entity.save();
 			console.log(
-				`Payment ${paymentIndex} updated in payment request ${orderId}`
+				`Payment ${paymentIndex} updated in payment request ${orderId}. Total paid: ${totalAmountPaid}, Remaining: ${entity.remainingAmount}`
 			);
 		}
 		console.log("C");
@@ -2115,7 +2123,8 @@ async function handleCorrectionSubmission(payload, context) {
 		request.paymentDetails.method,
 		request.paymentDetails.notes,
 		request.paymentDetails,
-		userId
+		userId,
+		caisse.type
 	);
 	console.log("request.paymentDetails.method", request.paymentDetails.method);
 	console.log("request", request);
@@ -2446,6 +2455,570 @@ async function handlePaymentModifSubmission(payload, context) {
 			headers: { "Content-Type": "application/json" },
 		};
 	}
+}
+// Helper function to fetch document
+async function fetchDocument(orderId) {
+	if (orderId.startsWith("CMD/")) {
+		return await Order.findOne({ id_commande: orderId });
+	} else if (orderId.startsWith("PAY/")) {
+		return await PaymentRequest.findOne({ id_paiement: orderId });
+	} else {
+		throw new Error("Invalid orderId format");
+	}
+}
+
+// MODIFIED: Main payment processing logic
+// Move validation BEFORE database update
+async function processPaymentSubmission(payload, context) {
+	console.log("** processPaymentSubmission");
+
+	// Immediate response to close modal
+	context.res = {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ response_action: "clear" }),
+	};
+
+	await postSlackMessage(
+		"https://slack.com/api/chat.postMessage",
+		{
+			channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+			text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
+		},
+		process.env.SLACK_BOT_TOKEN
+	);
+
+	// Process in background
+	setImmediate(async () => {
+		try {
+			console.log("WW 1");
+
+			// Extract form data
+			const formData = payload.view.state.values;
+			const paymentMode =
+				formData.payment_mode?.select_payment_mode?.selected_option?.value;
+			const paymentTitle = formData.payment_title?.input_payment_title?.value;
+			const amountPaid = parseFloat(
+				formData.amount_paid?.input_amount_paid?.value
+			);
+			console.log("amountPaid", amountPaid);
+
+			// Process payment proofs
+			const proofFiles =
+				formData.payment_proof_unique?.input_payment_proof?.files || [];
+			console.log(
+				"proofFiles.length",
+				proofFiles.length,
+				"proofFiles",
+				proofFiles
+			);
+			const userId = payload.user.id;
+			const paymentProofs = [];
+			console.log("WW 2");
+
+			if (proofFiles.length > 0) {
+				console.log(`Processing ${proofFiles.length} payment proof files...`);
+
+				for (const file of proofFiles) {
+					try {
+						console.log(`Fetching file info for file ID: ${file.id}`);
+						const fileInfo = await getFileInfo(
+							file.id,
+							process.env.SLACK_BOT_TOKEN
+						);
+						console.log("File info retrieved:", fileInfo);
+
+						const privateUrl = fileInfo.url_private_download;
+						const filename = fileInfo.name;
+						const mimeType = fileInfo.mimetype;
+
+						console.log(`Downloading file from URL: ${privateUrl}`);
+
+						// Download the file from Slack
+						const response = await fetch(privateUrl, {
+							headers: {
+								Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+							},
+						});
+
+						const arrayBuffer = await response.arrayBuffer();
+						const buffer = Buffer.from(arrayBuffer);
+						const fileSize = buffer.length;
+						console.log(`File downloaded. Size: ${fileSize} bytes`);
+
+						// Upload file directly using uploadV2
+						console.log(`Uploading file to channel: ${filename}`);
+						const uploadResult = await client.files.uploadV2({
+							channel_id: process.env.SLACK_ORDER_LOG_FINANCE_CHANNEL,
+							file: buffer,
+							filename: filename,
+						});
+
+						console.log("File uploaded successfully:", uploadResult);
+
+						// Extract the uploaded file ID from the response
+						let uploadedFileId = null;
+						if (uploadResult.files && uploadResult.files.length > 0) {
+							const firstFile = uploadResult.files[0];
+							if (firstFile.files && firstFile.files.length > 0) {
+								uploadedFileId = firstFile.files[0].id;
+							} else if (firstFile.id) {
+								uploadedFileId = firstFile.id;
+							}
+						}
+
+						if (!uploadedFileId) {
+							throw new Error("Could not extract file ID from upload response");
+						}
+
+						console.log("Uploaded file ID:", uploadedFileId);
+
+						// Fetch the file info to get permalink and other details
+						const uploadedFileInfo = await getFileInfo(
+							uploadedFileId,
+							process.env.SLACK_BOT_TOKEN
+						);
+						console.log("Uploaded file info:", uploadedFileInfo);
+
+						const filePermalink = uploadedFileInfo.permalink;
+						console.log("File permalink:", filePermalink);
+
+						// Optional: Send to specific colleagues via DM
+						const colleagueUserIds = ["U08CYGSDBNW"];
+
+						for (const colleagueId of colleagueUserIds) {
+							try {
+								console.log(`Notification sent to colleague: ${colleagueId}`);
+							} catch (dmError) {
+								console.error(`Error sending DM to ${colleagueId}:`, dmError);
+							}
+						}
+
+						// Store the permalink for payment proofs
+						paymentProofs.push(filePermalink);
+					} catch (error) {
+						console.error(
+							"Error processing payment proof file:",
+							error.message
+						);
+						console.error("Full error:", error);
+
+						// Send error notification to user
+						await postSlackMessage(
+							"https://slack.com/api/chat.postMessage",
+							{
+								channel: userId,
+								text: `⚠️ Erreur lors du traitement du fichier de preuve de paiement: ${error.message}`,
+							},
+							process.env.SLACK_BOT_TOKEN
+						);
+					}
+				}
+			} else {
+				// Fallback to the original logic if no files to process
+				const fallbackProofs =
+					formData.payment_proof_unique?.input_payment_proof?.files?.map(
+						(file) =>
+							file.permalink || file.url_private_download || file.url_private
+					) || [];
+				paymentProofs.push(...fallbackProofs);
+			}
+			console.log("WW 3");
+
+			const paymentUrl =
+				formData.paiement_url?.input_paiement_url?.value || null;
+
+			// Get order ID from metadata
+			const metadata = JSON.parse(payload.view.private_metadata);
+			console.log("metadata11", metadata);
+			const orderId = metadata.orderId;
+
+			const slackToken = process.env.SLACK_BOT_TOKEN;
+			console.log("WW 4");
+
+			// Validate inputs for non-cash payments
+			if (
+				paymentMode !== "Espèces" &&
+				(!paymentProofs || paymentProofs.length === 0) &&
+				(!paymentUrl || paymentUrl.trim() === "")
+			) {
+				console.log("WW 5");
+				console.log(
+					"❌ Error: No payment proof or URL provided for non-cash payment"
+				);
+				console.log("paymentMode", paymentMode);
+				console.log("paymentProofs", paymentProofs);
+				console.log("paymentUrl", paymentUrl);
+
+				await postSlackMessage(
+					"https://slack.com/api/chat.postMessage",
+					{
+						channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+						text: "❌ Erreur : Veuillez fournir soit un fichier de preuve de paiement, soit une URL de paiement.",
+					},
+					slackToken
+				);
+				return;
+			}
+			console.log("WW 6");
+
+			// For non-cash payments, validate URL if provided
+			let validURL = true;
+			if (paymentMode !== "Espèces" && paymentUrl && paymentUrl.trim() !== "") {
+				console.log("WW 7");
+				validURL = await extractAndValidateUrl(
+					paymentUrl,
+					[],
+					userId,
+					slackToken
+				);
+				if (!validURL) {
+					await postSlackMessage(
+						"https://slack.com/api/chat.postMessage",
+						{
+							channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+							text: "⚠️ L'URL du justificatif n'est pas valide.",
+						},
+						slackToken
+					);
+					return;
+				}
+			}
+			console.log("WW 8");
+
+			// STEP 1: Validate payment BEFORE adding to database
+			const document = await fetchDocument(orderId);
+			if (!document) {
+				throw new Error(`Document ${orderId} not found`);
+			}
+
+			const currentAmountPaid = document.amountPaid || 0;
+			const totalAmountDue = await calculateTotalAmountDue(orderId, context);
+			const remainingAmount = totalAmountDue - currentAmountPaid;
+
+			console.log("Payment validation:", {
+				currentAmountPaid,
+				totalAmountDue,
+				remainingAmount,
+				newPaymentAmount: amountPaid,
+				willExceed: amountPaid > remainingAmount,
+			});
+
+			// Validate payment amount
+			if (amountPaid > remainingAmount) {
+				console.log("❌ Payment exceeds remaining amount:", {
+					amountPaid,
+					remainingAmount,
+					difference: amountPaid - remainingAmount,
+				});
+
+				await postSlackMessage(
+					"https://slack.com/api/chat.postMessage",
+					{
+						channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+						text: `❌ Le montant payé (${amountPaid}) dépasse le montant restant dû (${remainingAmount}).`,
+					},
+					slackToken
+				);
+				return; // Exit early
+			}
+
+			// Get currency from document
+			let currency = "XOF"; // Default currency
+			if (orderId.startsWith("CMD/")) {
+				if (
+					document.proformas &&
+					document.proformas.length > 0 &&
+					document.proformas[0].validated === true
+				) {
+					console.log("WW 11");
+					currency = document.proformas[0].devise;
+					context.log("Currency found:", currency);
+				} else {
+					context.log("Proforma is not validated or does not exist");
+				}
+			} else if (orderId.startsWith("PAY/")) {
+				console.log("WW 11");
+				currency = document.devise;
+				context.log("Currency found:", currency);
+			}
+			console.log("WW 12");
+
+			// For cash payments, check if there's enough balance in the cash register
+			if (paymentMode === "Espèces") {
+				// Get current caisse state
+				const caisse = await Caisse.findOne({});
+				if (!caisse) {
+					throw new Error("Caisse document not found");
+				}
+
+				// Check if there will be enough balance after transaction
+				const currentBalance = caisse.balances[currency] || 0;
+				const projectedBalance = currentBalance - amountPaid;
+				context.log("Current balance:", currentBalance);
+				context.log("Projected balance:", projectedBalance);
+
+				// If balance will be negative, BLOCK the transaction
+				if (projectedBalance < 0) {
+					context.log(
+						`❌ Error: Insufficient funds in Caisse for ${currency}. Current: ${currentBalance}, Required: ${amountPaid}`
+					);
+					await postSlackMessage(
+						"https://slack.com/api/chat.postMessage",
+						{
+							channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+							text: `❌ PAIEMENT BLOQUÉ : Solde insuffisant dans la caisse pour ${currency}. Solde actuel: ${currentBalance}, Montant nécessaire: ${amountPaid}. Veuillez recharger la caisse avant de procéder au paiement.`,
+						},
+						slackToken
+					);
+
+					// Also notify the user who submitted the payment
+					await postSlackMessage(
+						"https://slack.com/api/chat.postMessage",
+						{
+							channel: payload.user.id,
+							text: `❌ Paiement en espèces refusé pour ${orderId} : Solde insuffisant dans la caisse pour ${currency}. L'équipe des finances a été notifiée.`,
+						},
+						slackToken
+					);
+
+					// Exit completely - don't process any part of this payment
+					return;
+				}
+			}
+			console.log("WW 13");
+
+			// Extract mode-specific details
+			let paymentDetails = {};
+			switch (paymentMode) {
+				case "Chèque":
+					paymentDetails = {
+						cheque_number: formData.cheque_number?.input_cheque_number?.value,
+						cheque_bank:
+							formData.cheque_bank?.input_cheque_bank?.selected_option?.value,
+						cheque_date: formData.cheque_date?.input_cheque_date?.selected_date,
+						cheque_order: formData.cheque_order?.input_cheque_order?.value,
+					};
+					break;
+				case "Virement":
+					paymentDetails = {
+						virement_number:
+							formData.virement_number?.input_virement_number?.value,
+						virement_bank:
+							formData.virement_bank?.input_virement_bank?.selected_option
+								?.value,
+						virement_date:
+							formData.virement_date?.input_virement_date?.selected_date,
+						virement_order:
+							formData.virement_order?.input_virement_order?.value,
+					};
+					break;
+				case "Mobile Money":
+					paymentDetails = {
+						mobilemoney_recipient_phone:
+							formData.mobilemoney_recipient_phone
+								?.input_mobilemoney_recipient_phone?.value,
+						mobilemoney_sender_phone:
+							formData.mobilemoney_sender_phone?.input_mobilemoney_sender_phone
+								?.value,
+						mobilemoney_date:
+							formData.mobilemoney_date?.input_mobilemoney_date?.selected_date,
+					};
+					break;
+				case "Julaya":
+					paymentDetails = {
+						julaya_recipient:
+							formData.julaya_recipient?.input_julaya_recipient?.value,
+						julaya_date: formData.julaya_date?.input_julaya_date?.selected_date,
+						julaya_transaction_number:
+							formData.julaya_transaction_number
+								?.input_julaya_transaction_number?.value,
+					};
+					break;
+				case "Espèces":
+					// No additional fields required
+					break;
+				default:
+					throw new Error("Unknown payment mode");
+			}
+
+			// STEP 2: Add payment to database (only after validation)
+			const paymentData = {
+				paymentMode,
+				amountPaid,
+				paymentTitle,
+				paymentProofs,
+				paymentUrl,
+				details: paymentDetails,
+				dateSubmitted: new Date(),
+			};
+			console.log("WW 14");
+
+			const newAmountPaid = currentAmountPaid + amountPaid;
+			const newRemainingAmount = remainingAmount - amountPaid;
+			const paymentStatus = determinePaymentStatus(
+				totalAmountDue,
+				newAmountPaid
+			);
+
+			// Update document with payment data
+			if (orderId.startsWith("CMD/")) {
+				await Order.findOneAndUpdate(
+					{ id_commande: orderId },
+					{
+						$push: { payments: paymentData },
+						$set: {
+							totalAmountDue,
+							amountPaid: newAmountPaid,
+							remainingAmount: newRemainingAmount,
+							paymentStatus,
+							paymentDone: newRemainingAmount === 0 ? "true" : "false",
+						},
+					},
+					{ new: true }
+				);
+			} else if (orderId.startsWith("PAY/")) {
+				await PaymentRequest.findOneAndUpdate(
+					{ id_paiement: orderId },
+					{
+						$push: { payments: paymentData },
+						$set: {
+							totalAmountDue,
+							amountPaid: newAmountPaid,
+							remainingAmount: newRemainingAmount,
+							paymentStatus,
+							paymentDone: newRemainingAmount === 0 ? "true" : "false",
+						},
+					},
+					{ new: true }
+				);
+			}
+			console.log("WW 15");
+
+			// STEP 3: Handle cash payments (Caisse update)
+			if (paymentMode === "Espèces") {
+				console.log("WW 18");
+
+				// At this point, we've already checked that the balance is sufficient
+				const caisseUpdate = {
+					$inc: { [`balances.${currency}`]: -amountPaid }, // Subtract amountPaid from the currency balance
+					$push: {
+						transactions: {
+							type: "payment",
+							amount: -amountPaid, // Negative to indicate a deduction
+							currency,
+							orderId,
+							details: `Payment for ${paymentTitle} (Order: ${orderId})`,
+							timestamp: new Date(),
+							paymentMethod: "Espèces",
+							paymentDetails,
+						},
+					},
+				};
+
+				const updatedCaisse = await Caisse.findOneAndUpdate(
+					{}, // Assuming a single Caisse document; adjust query if needed
+					caisseUpdate,
+					{ new: true }
+				);
+
+				if (!updatedCaisse) {
+					throw new Error("Caisse document not found");
+				}
+				context.log(
+					`New caisse balance for ${currency}: ${updatedCaisse.balances[currency]}`
+				);
+
+				// After updating the Caisse balance, sync with Excel
+				if (updatedCaisse.latestRequestId) {
+					await syncCaisseToExcel(updatedCaisse, updatedCaisse.latestRequestId);
+					context.log(
+						`Excel file updated for latest request ${updatedCaisse.latestRequestId} with new balance for ${currency}`
+					);
+				} else {
+					context.log(
+						"No latestRequestId found in Caisse, skipping Excel sync"
+					);
+				}
+
+				// Notify finance team about the successful cash payment
+				await postSlackMessage(
+					"https://slack.com/api/chat.postMessage",
+					{
+						channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+						text: `✅ Paiement en espèces traité pour ${orderId}. Nouveau solde de la caisse pour ${currency}: ${updatedCaisse.balances[currency]}.`,
+					},
+					slackToken
+				);
+			}
+
+			// Prepare notification data
+			const notifyPaymentData = {
+				title: paymentData.paymentTitle,
+				mode: paymentData.paymentMode,
+				amountPaid: paymentData.amountPaid,
+				date: paymentData.dateSubmitted,
+				url: paymentData.paymentUrl,
+				proofs: paymentData.paymentProofs,
+				details: paymentData.details,
+			};
+			console.log("WW 19");
+
+			console.log("payload.user.id", payload.user.id);
+			console.log("userId", userId);
+
+			// STEP 4: Send notifications
+			await Promise.all([
+				notifyPayment(
+					orderId,
+					notifyPaymentData,
+					totalAmountDue,
+					newRemainingAmount,
+					paymentStatus,
+					context,
+					"finance",
+					payload.user.id
+				),
+				notifyPayment(
+					orderId,
+					notifyPaymentData,
+					totalAmountDue,
+					newRemainingAmount,
+					paymentStatus,
+					context,
+					"user",
+					payload.user.id
+				),
+				notifyPayment(
+					orderId,
+					notifyPaymentData,
+					totalAmountDue,
+					newRemainingAmount,
+					paymentStatus,
+					context,
+					"admin",
+					payload.user.id
+				),
+			]).catch((error) =>
+				context.log(`❌ Erreur lors des notifications: ${error}`)
+			);
+			console.log("WW 20");
+		} catch (error) {
+			context.log(
+				`Background processing error for payment submission: ${error.message}\nStack: ${error.stack}`
+			);
+			await postSlackMessage(
+				"https://slack.com/api/chat.postMessage",
+				{
+					channel: payload.user.id,
+					text: `❌ Erreur lors du traitement du paiement pour la commande. Veuillez contacter le support. Détails : ${error.message}`,
+				},
+				process.env.SLACK_BOT_TOKEN
+			);
+		}
+	});
+
+	return context.res;
 }
 async function handleViewSubmission(payload, context) {
 	console.log("** handleViewSubmission");
@@ -3209,566 +3782,7 @@ async function handleViewSubmission(payload, context) {
 
 	if (payload.view.callback_id === "payment_form_submission") {
 		console.log("** payment_form_submission");
-		// Immediate response to close modal
-		context.res = {
-			status: 200,
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ response_action: "clear" }),
-		};
-		await postSlackMessage(
-			"https://slack.com/api/chat.postMessage",
-			{
-				channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-				text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
-			},
-			process.env.SLACK_BOT_TOKEN
-		);
-
-		// Process in background
-		setImmediate(async () => {
-			try {
-				// Extract form data
-				const formData = payload.view.state.values;
-				const paymentMode =
-					formData.payment_mode?.select_payment_mode?.selected_option?.value;
-				const paymentTitle = formData.payment_title?.input_payment_title?.value;
-				const amountPaid = parseFloat(
-					formData.amount_paid?.input_amount_paid?.value
-				);
-				console.log("amountPaid", amountPaid);
-				// const paymentProofs =
-				// 	formData.payment_proof_unique?.input_payment_proof?.files?.map(
-				// 		(file) =>
-				// 			file.permalink || file.url_private_download || file.url_private // Use permalink first
-				// 	) || [];
-
-				// ...existing code...
-
-				// Replace the existing paymentProofs line with this:
-				const proofFiles =
-					formData.payment_proof_unique?.input_payment_proof?.files || [];
-				console.log(
-					"proofFiles.length",
-					proofFiles.length,
-					"proofFiles",
-					proofFiles
-				);
-				const userId = payload.user.id;
-				// Array to store processed payment proof URLs
-				const paymentProofs = [];
-
-				if (proofFiles.length > 0) {
-					console.log(`Processing ${proofFiles.length} payment proof files...`);
-
-					for (const file of proofFiles) {
-						try {
-							console.log(`Fetching file info for file ID: ${file.id}`);
-							const fileInfo = await getFileInfo(
-								file.id,
-								process.env.SLACK_BOT_TOKEN
-							);
-							console.log("File info retrieved:", fileInfo);
-
-							const privateUrl = fileInfo.url_private_download;
-							const filename = fileInfo.name;
-							const mimeType = fileInfo.mimetype;
-
-							console.log(`Downloading file from URL: ${privateUrl}`);
-
-							// Download the file from Slack
-							const response = await fetch(privateUrl, {
-								headers: {
-									Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-								},
-							});
-
-							const arrayBuffer = await response.arrayBuffer();
-							const buffer = Buffer.from(arrayBuffer);
-							const fileSize = buffer.length;
-							console.log(`File downloaded. Size: ${fileSize} bytes`);
-
-							// Upload file directly using uploadV2
-							console.log(`Uploading file to channel: ${filename}`);
-							const uploadResult = await client.files.uploadV2({
-								channel_id: process.env.SLACK_ORDER_LOG_FINANCE_CHANNEL, // Same channel as proforma
-								file: buffer,
-								filename: filename,
-								// title: `Payment proof uploaded by <@${userId}>`,
-								// initial_comment: `📎 New payment proof shared by <@${userId}>: ${filename}`,
-							});
-
-							console.log("File uploaded successfully:", uploadResult);
-
-							// Extract the uploaded file ID from the response
-							let uploadedFileId = null;
-							if (uploadResult.files && uploadResult.files.length > 0) {
-								// Handle nested files array structure
-								const firstFile = uploadResult.files[0];
-								if (firstFile.files && firstFile.files.length > 0) {
-									uploadedFileId = firstFile.files[0].id;
-								} else if (firstFile.id) {
-									uploadedFileId = firstFile.id;
-								}
-							}
-
-							if (!uploadedFileId) {
-								throw new Error(
-									"Could not extract file ID from upload response"
-								);
-							}
-
-							console.log("Uploaded file ID:", uploadedFileId);
-
-							// Fetch the file info to get permalink and other details
-							const uploadedFileInfo = await getFileInfo(
-								uploadedFileId,
-								process.env.SLACK_BOT_TOKEN
-							);
-							console.log("Uploaded file info:", uploadedFileInfo);
-
-							const filePermalink = uploadedFileInfo.permalink;
-							console.log("File permalink:", filePermalink);
-
-							// Optional: Send to specific colleagues via DM
-							const colleagueUserIds = ["U08CYGSDBNW"]; // Replace with actual user IDs
-
-							for (const colleagueId of colleagueUserIds) {
-								try {
-									// await client.chat.postMessage({
-									//     channel: colleagueId, // Send as DM
-									//     text: `📎 New payment proof shared by <@${userId}>: ${filename}`,
-									//     attachments: [
-									//         {
-									//             title: filename,
-									//             title_link: filePermalink,
-									//             text: "Click to view the uploaded payment proof",
-									//             color: "good",
-									//         },
-									//     ],
-									// });
-									console.log(`Notification sent to colleague: ${colleagueId}`);
-								} catch (dmError) {
-									console.error(`Error sending DM to ${colleagueId}:`, dmError);
-								}
-							}
-
-							// Store the permalink for payment proofs
-							paymentProofs.push(filePermalink);
-						} catch (error) {
-							console.error(
-								"Error processing payment proof file:",
-								error.message
-							);
-							console.error("Full error:", error);
-
-							// Send error notification to user
-							await postSlackMessage(
-								"https://slack.com/api/chat.postMessage",
-								{
-									channel: userId,
-									text: `⚠️ Erreur lors du traitement du fichier de preuve de paiement: ${error.message}`,
-								},
-								process.env.SLACK_BOT_TOKEN
-							);
-						}
-					}
-				} else {
-					// Fallback to the original logic if no files to process
-					const fallbackProofs =
-						formData.payment_proof_unique?.input_payment_proof?.files?.map(
-							(file) =>
-								file.permalink || file.url_private_download || file.url_private
-						) || [];
-					paymentProofs.push(...fallbackProofs);
-				}
-
-				// ...existing code...
-				const paymentUrl =
-					formData.paiement_url?.input_paiement_url?.value || null;
-
-				// Get order ID from metadata
-				const metadata = JSON.parse(payload.view.private_metadata);
-				console.log("metadata11", metadata);
-				const orderId = metadata.orderId;
-
-				const slackToken = process.env.SLACK_BOT_TOKEN;
-
-				// Validate inputs for non-cash payments
-				if (
-					paymentMode !== "Espèces" &&
-					(!paymentProofs || paymentProofs.length === 0) &&
-					(!paymentUrl || paymentUrl.trim() === "")
-				) {
-					console.log(
-						"❌ Error: No payment proof or URL provided for non-cash payment"
-					);
-					console.log("paymentMode", paymentMode);
-					console.log("paymentProofs", paymentProofs);
-					console.log("paymentUrl", paymentUrl);
-					console.log(
-						"(!paymentProofs || paymentProofs.length === 0)",
-						!paymentProofs || paymentProofs.length === 0
-					);
-					console.log(
-						"(!paymentUrl || paymentUrl.trim() === '')",
-						!paymentUrl || paymentUrl.trim() === ""
-					);
-
-					await postSlackMessage(
-						"https://slack.com/api/chat.postMessage",
-						{
-							channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-							text: "❌ Erreur : Veuillez fournir soit un fichier de preuve de paiement, soit une URL de paiement.",
-						},
-						slackToken
-					);
-					return;
-				}
-
-				// For non-cash payments, validate URL if provided
-				let validURL = true;
-				if (
-					paymentMode !== "Espèces" &&
-					paymentUrl &&
-					paymentUrl.trim() !== ""
-				) {
-					validURL = await extractAndValidateUrl(
-						paymentUrl,
-						[],
-						userId,
-						slackToken
-					);
-					if (!validURL) {
-						await postSlackMessage(
-							"https://slack.com/api/chat.postMessage",
-							{
-								channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-								text: "⚠️ L'URL du justificatif n'est pas valide.",
-							},
-							slackToken
-						);
-						return;
-					}
-				}
-
-				// Find and validate document (order or payment request) before processing
-				let document;
-				let currency = "XOF"; // Default currency
-
-				if (orderId.startsWith("CMD/")) {
-					document = await Order.findOne({ id_commande: orderId });
-					if (!document) {
-						throw new Error(`Order ${orderId} not found`);
-					}
-				} else if (orderId.startsWith("PAY/")) {
-					document = await PaymentRequest.findOne({ id_paiement: orderId });
-					if (!document) {
-						throw new Error(`Payment request ${orderId} not found`);
-					}
-				} else {
-					throw new Error("Invalid orderId format");
-				}
-
-				// Get currency from document
-				if (
-					document.proformas &&
-					document.proformas.length > 0 &&
-					document.proformas[0].validated === true
-				) {
-					currency = document.proformas[0].devise;
-					context.log("Currency found:", currency);
-				} else {
-					context.log("Proforma is not validated or does not exist");
-				}
-
-				// For cash payments, check if there's enough balance in the cash register
-				if (paymentMode === "Espèces") {
-					// Get current caisse state
-					const caisse = await Caisse.findOne({});
-					if (!caisse) {
-						throw new Error("Caisse document not found");
-					}
-
-					// Check if there will be enough balance after transaction
-					const currentBalance = caisse.balances[currency] || 0;
-
-					const projectedBalance = currentBalance - amountPaid;
-					context.log("Current balance:", currentBalance);
-					context.log("Projected balance:", projectedBalance);
-
-					// If balance will be negative, BLOCK the transaction
-					if (projectedBalance < 0) {
-						context.log(
-							`❌ Error: Insufficient funds in Caisse for ${currency}. Current: ${currentBalance}, Required: ${amountPaid}`
-						);
-						await postSlackMessage(
-							"https://slack.com/api/chat.postMessage",
-							{
-								channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-								text: `❌ PAIEMENT BLOQUÉ : Solde insuffisant dans la caisse pour ${currency}. Solde actuel: ${currentBalance}, Montant nécessaire: ${amountPaid}. Veuillez recharger la caisse avant de procéder au paiement.`,
-							},
-							slackToken
-						);
-
-						// Also notify the user who submitted the payment
-						await postSlackMessage(
-							"https://slack.com/api/chat.postMessage",
-							{
-								channel: payload.user.id,
-								text: `❌ Paiement en espèces refusé pour ${orderId} : Solde insuffisant dans la caisse pour ${currency}. L'équipe des finances a été notifiée.`,
-							},
-							slackToken
-						);
-
-						// Exit completely - don't process any part of this payment
-						return;
-					}
-				}
-
-				// Extract mode-specific details
-				let paymentDetails = {};
-				switch (paymentMode) {
-					case "Chèque":
-						paymentDetails = {
-							cheque_number: formData.cheque_number?.input_cheque_number?.value,
-							cheque_bank:
-								formData.cheque_bank?.input_cheque_bank?.selected_option?.value,
-							cheque_date:
-								formData.cheque_date?.input_cheque_date?.selected_date,
-							cheque_order: formData.cheque_order?.input_cheque_order?.value,
-						};
-						break;
-					case "Virement":
-						paymentDetails = {
-							virement_number:
-								formData.virement_number?.input_virement_number?.value,
-							virement_bank:
-								formData.virement_bank?.input_virement_bank?.selected_option
-									?.value,
-							virement_date:
-								formData.virement_date?.input_virement_date?.selected_date,
-							virement_order:
-								formData.virement_order?.input_virement_order?.value,
-						};
-						break;
-					case "Mobile Money":
-						paymentDetails = {
-							mobilemoney_recipient_phone:
-								formData.mobilemoney_recipient_phone
-									?.input_mobilemoney_recipient_phone?.value,
-							mobilemoney_sender_phone:
-								formData.mobilemoney_sender_phone
-									?.input_mobilemoney_sender_phone?.value,
-							mobilemoney_date:
-								formData.mobilemoney_date?.input_mobilemoney_date
-									?.selected_date,
-						};
-						break;
-					case "Julaya":
-						paymentDetails = {
-							julaya_recipient:
-								formData.julaya_recipient?.input_julaya_recipient?.value,
-							julaya_date:
-								formData.julaya_date?.input_julaya_date?.selected_date,
-							julaya_transaction_number:
-								formData.julaya_transaction_number
-									?.input_julaya_transaction_number?.value,
-						};
-						break;
-					case "Espèces":
-						// No additional fields required
-						break;
-					default:
-						throw new Error("Unknown payment mode");
-				}
-
-				// Create payment data object
-				const paymentData = {
-					paymentMode,
-					amountPaid,
-					paymentTitle,
-					paymentProofs,
-					paymentUrl,
-					details: paymentDetails,
-					dateSubmitted: new Date(),
-				};
-
-				// Calculate total amount due
-				const totalAmountDue = await calculateTotalAmountDue(orderId, context);
-				console.log("totalAmountDue", totalAmountDue);
-				// Update document with payment data
-				if (orderId.startsWith("CMD/")) {
-					document = await Order.findOneAndUpdate(
-						{ id_commande: orderId },
-						{
-							$push: { payments: paymentData },
-							$set: { totalAmountDue },
-						},
-						{ new: true }
-					);
-				} else if (orderId.startsWith("PAY/")) {
-					document = await PaymentRequest.findOneAndUpdate(
-						{ id_paiement: orderId },
-						{ $push: { payments: paymentData }, $set: { totalAmountDue } },
-						{ new: true }
-					);
-				}
-
-				// Update payment status
-				const { newAmountPaid, paymentStatus, remainingAmount } =
-					await handlePayment(orderId, amountPaid, totalAmountDue, context);
-				console.log("amountPaid", amountPaid);
-				console.log("newAmountPaid", newAmountPaid);
-				console.log("remainingAmount", remainingAmount);
-				console.log("totalAmountDue", totalAmountDue);
-
-				// Update status in database
-				if (orderId.startsWith("CMD/")) {
-					await Order.updateOne(
-						{ id_commande: orderId },
-						{
-							$set: {
-								paymentStatus,
-								amountPaid: newAmountPaid,
-								remainingAmount,
-							},
-						}
-					);
-				} else if (orderId.startsWith("PAY/")) {
-					await PaymentRequest.updateOne(
-						{ id_paiement: orderId },
-						{
-							$set: {
-								paymentStatus,
-								amountPaid: newAmountPaid,
-								remainingAmount,
-							},
-						}
-					);
-				}
-
-				// Update Caisse balance if payment mode is Espèces
-				if (paymentMode === "Espèces") {
-					// At this point, we've already checked that the balance is sufficient
-					const caisseUpdate = {
-						$inc: { [`balances.${currency}`]: -amountPaid }, // Subtract amountPaid from the currency balance
-						$push: {
-							transactions: {
-								type: "payment",
-								amount: -amountPaid, // Negative to indicate a deduction
-								currency,
-								orderId,
-								details: `Payment for ${paymentTitle} (Order: ${orderId})`,
-								timestamp: new Date(),
-								paymentMethod: "Espèces",
-								paymentDetails,
-							},
-						},
-					};
-
-					const updatedCaisse = await Caisse.findOneAndUpdate(
-						{}, // Assuming a single Caisse document; adjust query if needed
-						caisseUpdate,
-						{ new: true }
-					);
-
-					if (!updatedCaisse) {
-						throw new Error("Caisse document not found");
-					}
-					context.log(
-						`New caisse balance for ${currency}: ${updatedCaisse.balances[currency]}`
-					);
-
-					// After updating the Caisse balance, sync with Excel
-					if (updatedCaisse.latestRequestId) {
-						await syncCaisseToExcel(
-							updatedCaisse,
-							updatedCaisse.latestRequestId
-						);
-						context.log(
-							`Excel file updated for latest request ${updatedCaisse.latestRequestId} with new balance for ${currency}`
-						);
-					} else {
-						context.log(
-							"No latestRequestId found in Caisse, skipping Excel sync"
-						);
-					}
-
-					// Notify finance team about the successful cash payment
-					await postSlackMessage(
-						"https://slack.com/api/chat.postMessage",
-						{
-							channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-							text: `✅ Paiement en espèces traité pour ${orderId}. Nouveau solde de la caisse pour ${currency}: ${updatedCaisse.balances[currency]}.`,
-						},
-						slackToken
-					);
-				}
-
-				// Prepare notification data
-				const notifyPaymentData = {
-					title: paymentData.paymentTitle,
-					mode: paymentData.paymentMode,
-					amountPaid: paymentData.amountPaid,
-					date: paymentData.dateSubmitted,
-					url: paymentData.paymentUrl,
-					proofs: paymentData.paymentProofs,
-					details: paymentData.details,
-				};
-
-				console.log("payload.user.id", payload.user.id);
-				console.log("userId", userId);
-				// Notify teams
-				await Promise.all([
-					notifyPayment(
-						orderId,
-						notifyPaymentData,
-						totalAmountDue,
-						remainingAmount,
-						paymentStatus,
-						context,
-						"finance",
-						payload.user.id
-					),
-					notifyPayment(
-						orderId,
-						notifyPaymentData,
-						totalAmountDue,
-						remainingAmount,
-						paymentStatus,
-						context,
-						"user",
-						payload.user.id
-					),
-					notifyPayment(
-						orderId,
-						notifyPaymentData,
-						totalAmountDue,
-						remainingAmount,
-						paymentStatus,
-						context,
-						"admin",
-						payload.user.id
-					),
-				]).catch((error) =>
-					context.log(`❌ Erreur lors des notifications: ${error}`)
-				);
-			} catch (error) {
-				context.log(
-					`Background processing error for payment submission: ${error.message}\nStack: ${error.stack}`
-				);
-				await postSlackMessage(
-					"https://slack.com/api/chat.postMessage",
-					{
-						channel: payload.user.id,
-						text: `❌ Erreur lors du traitement du paiement pour la commande. Veuillez contacter le support. Détails : ${error.message}`,
-					},
-					process.env.SLACK_BOT_TOKEN
-				);
-			}
-		});
-
-		return context.res;
+		await processPaymentSubmission(payload, context);
 	}
 	if (payload.view.callback_id === "payment_problem_submission") {
 		console.log("$$ payment_modification_submission");

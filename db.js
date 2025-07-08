@@ -56,19 +56,19 @@ const OrderSchema = new mongoose.Schema(
 				createdAt: { type: Date, default: Date.now },
 			},
 		],
-		 // New fields for specific channel message references
-        achatMessage: {
-            ts: { type: String }, // Message timestamp
-            createdAt: { type: Date, default: Date.now },
-        },
-        financeMessage: {
-            ts: { type: String }, // Message timestamp
-            createdAt: { type: Date, default: Date.now },
-        },
-        adminMessage: {
-            ts: { type: String }, // Message timestamp
-            createdAt: { type: Date, default: Date.now },
-        },
+		// New fields for specific channel message references
+		achatMessage: {
+			ts: { type: String }, // Message timestamp
+			createdAt: { type: Date, default: Date.now },
+		},
+		financeMessage: {
+			ts: { type: String }, // Message timestamp
+			createdAt: { type: Date, default: Date.now },
+		},
+		adminMessage: {
+			ts: { type: String }, // Message timestamp
+			createdAt: { type: Date, default: Date.now },
+		},
 		articles: [
 			{
 				quantity: { type: Number, required: false }, // Numeric quantity
@@ -333,6 +333,28 @@ const PaymentRequestSchema = new mongoose.Schema({
 			createdAt: { type: Date, default: Date.now },
 		},
 	],
+	delay_history: [
+		{
+			type: {
+				type: String,
+				enum: [
+					"reminder",
+					"payment_reminder",
+					"proforma_reminder",
+					"admin_reminder",
+				],
+				required: false,
+			},
+			timestamp: {
+				type: Date,
+				default: Date.now,
+			},
+			details: {
+				type: String,
+				default: "",
+			},
+		},
+	],
 	blockPayment: { type: Boolean, default: false },
 	date_requete: { type: String, required: true }, // Requested payment date
 	statut: {
@@ -346,6 +368,12 @@ const PaymentRequestSchema = new mongoose.Schema({
 			"Annulé",
 		],
 		default: "En attente",
+	},
+	payment_reminder_sent: { type: Boolean, default: false },
+	proforma_reminder_sent: { type: Boolean, default: false },
+	admin_reminder_sent: {
+		type: Boolean,
+		default: false,
 	},
 	updatedAt: Date,
 	demandeur_message: { channel: String, ts: String }, // Added for demandeur message
@@ -615,7 +643,6 @@ PaymentRequestSchema.post("insertOne", async function (doc) {
 });
 const PaymentRequest = mongoose.model("PaymentRequest", PaymentRequestSchema);
 
-
 // Command sequence schema
 const commandSequenceSchema = new mongoose.Schema({
 	yearMonth: { type: String, required: true, unique: true },
@@ -716,6 +743,11 @@ const transactionSchema = new mongoose.Schema({
 });
 
 const caisseSchema = new mongoose.Schema({
+	type: {
+		type: String,
+		required: true,
+	},
+
 	balances: {
 		XOF: { type: Number, default: 0 },
 		USD: { type: Number, default: 0 },

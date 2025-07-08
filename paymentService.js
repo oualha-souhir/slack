@@ -148,23 +148,23 @@ async function handlePayment(orderId, paymentAmount, totalAmountDue, context) {
 	console.log("Input parameters:", { orderId, paymentAmount, totalAmountDue });
 
 	let document;
+
 	if (orderId.startsWith("PAY/")) {
 		document = await PaymentRequest.findOne({ id_paiement: orderId });
-		// FIXED: Get the amount paid BEFORE the current payment was added
-		// We need to subtract the current payment to get the previous state
-		const currentTotalAmountPaid = document.amountPaid || 0;
-		const previousAmountPaid = currentTotalAmountPaid - paymentAmount; // This is the key fix!
-		const remainingAmount = totalAmountDue - previousAmountPaid;
+
+		// Get the CURRENT amount paid (before this payment)
+		const currentAmountPaid = document.amountPaid || 0;
+		const remainingAmount = totalAmountDue - currentAmountPaid;
 
 		console.log("Payment validation:", {
-			currentTotalAmountPaid,
-			previousAmountPaid,
+			currentAmountPaid,
 			totalAmountDue,
 			remainingAmount,
 			newPaymentAmount: paymentAmount,
 			willExceed: paymentAmount > remainingAmount,
 		});
 
+		// Validate payment doesn't exceed remaining amount
 		if (paymentAmount > remainingAmount) {
 			console.log("❌ Payment exceeds remaining amount:", {
 				paymentAmount,
@@ -186,160 +186,116 @@ async function handlePayment(orderId, paymentAmount, totalAmountDue, context) {
 			);
 		}
 
-		const newAmountPaid = currentTotalAmountPaid; // This is already correct
+		// Calculate new totals
+		const newAmountPaid = currentAmountPaid + paymentAmount;
 		const paymentStatus = determinePaymentStatus(totalAmountDue, newAmountPaid);
-		const newremainingAmount = totalAmountDue - newAmountPaid;
+		const newRemainingAmount = totalAmountDue - newAmountPaid;
 
 		console.log("Payment calculation results:", {
 			newAmountPaid,
 			paymentStatus,
-			newremainingAmount,
+			newRemainingAmount,
 		});
 
-		if (newremainingAmount == 0) {
-			const updateResult = await PaymentRequest.updateOne(
-				{ id_paiement: orderId }, // Fixed: was using id_commande instead of id_paiement
-				{
-					$set: {
-						paymentDone: "true",
-					},
-				}
-			);
-			context.log(`Update result: ${JSON.stringify(updateResult)}`);
+		// Update payment status
+		const updateData = {
+			paymentDone: newRemainingAmount === 0 ? "true" : "false",
+		};
 
-			if (updateResult.modifiedCount === 0) {
-				throw new Error(
-					`Failed to update entity ${orderId} - no documents modified`
-				);
-			}
-		} else {
-			const updateResult = await PaymentRequest.updateOne(
-				{ id_paiement: orderId },
-				{
-					$set: {
-						paymentDone: "false",
-					},
-				}
+		const updateResult = await PaymentRequest.updateOne(
+			{ id_paiement: orderId },
+			{ $set: updateData }
+		);
+
+		context.log(`Update result: ${JSON.stringify(updateResult)}`);
+
+		if (updateResult.modifiedCount === 0) {
+			throw new Error(
+				`Failed to update payment request ${orderId} - no documents modified`
 			);
-			context.log(`Update result: ${JSON.stringify(updateResult)}`);
 		}
+
 		return {
 			newAmountPaid,
 			paymentStatus,
 			totalAmountDue,
-			remainingAmount: newremainingAmount,
+			remainingAmount: newRemainingAmount,
 		};
-	} else {
+	} else if (orderId.startsWith("CMD/")) {
 		document = await Order.findOne({ id_commande: orderId });
 
-		const amountPaid = document.amountPaid;
-		console.log("amountPaid", amountPaid);
-		const remainingAmount = totalAmountDue - amountPaid;
-		console.log("totalAmountDue", totalAmountDue);
-		console.log("remainingAmount000", remainingAmount);
-		console.log("paymentAmount", paymentAmount);
+		if (!document) {
+			throw new Error("Commande non trouvée.");
+		}
+
+		// Get the CURRENT amount paid (before this payment)
+		const currentAmountPaid = document.amountPaid || 0;
+		const remainingAmount = totalAmountDue - currentAmountPaid;
+
+		console.log("Payment validation:", {
+			currentAmountPaid,
+			totalAmountDue,
+			remainingAmount,
+			newPaymentAmount: paymentAmount,
+			willExceed: paymentAmount > remainingAmount,
+		});
+
+		// Validate payment doesn't exceed remaining amount
 		if (paymentAmount > remainingAmount) {
-			// Post Slack message to the designated channel
-			const slackResponse = await postSlackMessage(
+			await postSlackMessage(
 				"https://slack.com/api/chat.postMessage",
 				{
 					channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-					text: "❌ Le montant payé dépasse le montant restant dû.",
+					text: `❌ Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`,
 				},
 				process.env.SLACK_BOT_TOKEN
 			);
 
-			if (!slackResponse.ok) {
-				context.log(`${slackResponse.error}`);
-			}
-			throw new Error("Le montant payé dépasse le montant restant dû.");
+			throw new Error(
+				`Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`
+			);
 		}
-		let newAmountPaid;
 
-		newAmountPaid = amountPaid + paymentAmount;
-
-		console.log("newAmountPaid", newAmountPaid);
+		// Calculate new totals
+		const newAmountPaid = currentAmountPaid + paymentAmount;
 		const paymentStatus = determinePaymentStatus(totalAmountDue, newAmountPaid);
-		console.log("paymentStatus", paymentStatus);
-		const newremainingAmount = totalAmountDue - newAmountPaid;
-		console.log("newremainingAmount", newremainingAmount);
-		if (orderId.startsWith("CMD/")) {
-			if (newremainingAmount == 0) {
-				const updateResult = await Order.updateOne(
-					{ id_commande: orderId },
-					{
-						$set: {
-							paymentDone: "true",
-						},
-					}
-				);
-				context.log(`Update result: ${JSON.stringify(updateResult)}`);
-				// Refresh entity to ensure latest data
-				updatedEntity = await fetchEntity(orderId, context);
-				console.log("1Updated entity:", updatedEntity);
-				if (updateResult.modifiedCount === 0) {
-					throw new Error(
-						`Failed to update entity ${orderId} - no documents modified`
-					);
-				}
-			} else {
-				const updateResult = await Order.updateOne(
-					{ id_commande: orderId },
-					{
-						$set: {
-							paymentDone: "false",
-						},
-					}
-				);
-				context.log(`Update result: ${JSON.stringify(updateResult)}`);
-				// Refresh entity to ensure latest data
-				updatedEntity = await fetchEntity(orderId, context);
-				console.log("2Updated entity:", updatedEntity);
-			}
-		} else if (orderId.startsWith("PAY/")) {
-      if (newremainingAmount == 0) {
-				const updateResult = await Order.updateOne(
-					{ id_paiement: orderId },
-					{
-						$set: {
-							paymentDone: "true",
-						},
-					}
-				);
-				context.log(`Update result: ${JSON.stringify(updateResult)}`);
-				// Refresh entity to ensure latest data
-				updatedEntity = await fetchEntity(orderId, context);
-				console.log("1Updated entity:", updatedEntity);
-				if (updateResult.modifiedCount === 0) {
-					throw new Error(
-						`Failed to update entity ${orderId} - no documents modified`
-					);
-				}
-			} else {
-				const updateResult = await Order.updateOne(
-					{ id_paiement: orderId },
-					{
-						$set: {
-							paymentDone: "false",
-						},
-					}
-				);
-				context.log(`Update result: ${JSON.stringify(updateResult)}`);
-				// Refresh entity to ensure latest data
-				updatedEntity = await fetchEntity(orderId, context);
-				console.log("2Updated entity:", updatedEntity);
-			}
+		const newRemainingAmount = totalAmountDue - newAmountPaid;
+
+		console.log("Payment calculation results:", {
+			newAmountPaid,
+			paymentStatus,
+			newRemainingAmount,
+		});
+
+		// Update payment status
+		const updateData = {
+			paymentDone: newRemainingAmount === 0 ? "true" : "false",
+		};
+
+		const updateResult = await Order.updateOne(
+			{ id_commande: orderId },
+			{ $set: updateData }
+		);
+
+		context.log(`Update result: ${JSON.stringify(updateResult)}`);
+
+		if (updateResult.modifiedCount === 0) {
+			throw new Error(
+				`Failed to update order ${orderId} - no documents modified`
+			);
 		}
+
 		return {
 			newAmountPaid,
 			paymentStatus,
 			totalAmountDue,
-			remainingAmount: newremainingAmount,
+			remainingAmount: newRemainingAmount,
 		};
+	} else {
+		throw new Error("Invalid orderId format");
 	}
-
-	if (!document) throw new Error("Commande non trouvée.");
 }
+
 function determinePaymentStatus(totalAmountDue, amountPaid) {
 	console.log("** determinePaymentStatus");
 	if (totalAmountDue < 0 || amountPaid < 0) {

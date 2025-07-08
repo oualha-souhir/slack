@@ -13,70 +13,118 @@ const { WebClient } = require("@slack/web-api");
 // Initialize the Slack client
 const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 // Generate Funding Request Modal
+// At the top of your file or in a separate cache module
+let caisseTypesCache = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+async function getCaisseTypes() {
+	const now = Date.now();
+
+	// Check if cache is valid
+	if (
+		caisseTypesCache &&
+		cacheTimestamp &&
+		now - cacheTimestamp < CACHE_DURATION
+	) {
+		return caisseTypesCache;
+	}
+
+	// Refresh cache
+	try {
+		const caisses = await Caisse.find({}, "type").exec();
+		caisseTypesCache = caisses.map((caisse) => ({
+			text: { type: "plain_text", text: caisse.type },
+			value: caisse.type,
+		}));
+		cacheTimestamp = now;
+		return caisseTypesCache;
+	} catch (error) {
+		// Return cached data if available, otherwise throw
+		if (caisseTypesCache) {
+			console.warn("Database query failed, using cached caisse types");
+			return caisseTypesCache;
+		}
+		throw error;
+	}
+}
+
 async function generateFundingRequestForm(context, trigger_id, params) {
 	console.log("** generateFundingRequestForm");
-	// Validate inputs
+
+	// Validate inputs immediately
 	if (!trigger_id) {
 		context.log("Error: trigger_id is missing");
 		throw new Error("trigger_id is required to open a modal");
 	}
 
 	const channelId = params.get("channel_id");
-	if (!channelId) {
-		context.log(
-			"Warning: channel_id is missing in params, falling back to default"
-		);
-		// Fallback to a default channel or user DM if needed
-		// channelId = process.env.SLACK_FINANCE_CHANNEL_ID || "unknown";
-	}
 	const finalChannelId =
 		channelId || process.env.SLACK_FINANCE_CHANNEL_ID || "unknown";
+
 	context.log(
 		`Generating funding request form with channelId: ${finalChannelId}`
 	);
 
-	const modal = {
-		type: "modal",
-		callback_id: "submit_funding_request",
-		title: { type: "plain_text", text: "Demande de fonds" },
-		private_metadata: JSON.stringify({
-			channelId: channelId, // Pass the channel ID
-		}),
-		submit: { type: "plain_text", text: "Soumettre" },
-		close: { type: "plain_text", text: "Annuler" },
-		blocks: [
-			{
-				type: "input",
-				block_id: "funding_amount",
-				element: {
-					type: "plain_text_input",
-					action_id: "input_funding_amount",
-					placeholder: { type: "plain_text", text: "Ex: 1000 XOF" },
-				},
-				label: { type: "plain_text", text: "Montant" },
-			},
-			{
-				type: "input",
-				block_id: "funding_reason",
-				element: {
-					type: "plain_text_input",
-					action_id: "input_funding_reason",
-				},
-				label: { type: "plain_text", text: "Motif" },
-			},
-			{
-				type: "input",
-				block_id: "funding_date",
-				element: {
-					type: "datepicker",
-					action_id: "input_funding_date",
-				},
-				label: { type: "plain_text", text: "Date Requise" },
-			},
-		],
-	};
-
 	try {
+		// Get caisse types from cache (fast)
+		const caisseOptions = await getCaisseTypes();
+
+		if (!caisseOptions || caisseOptions.length === 0) {
+			throw new Error("Aucune caisse disponible dans la base de données.");
+		}
+
+		const modal = {
+			type: "modal",
+			callback_id: "submit_funding_request",
+			title: { type: "plain_text", text: "Demande de fonds" },
+			private_metadata: JSON.stringify({
+				channelId: channelId,
+			}),
+			submit: { type: "plain_text", text: "Soumettre" },
+			close: { type: "plain_text", text: "Annuler" },
+			blocks: [
+				{
+					type: "input",
+					block_id: "caisse_type",
+					element: {
+						type: "static_select",
+						action_id: "input_caisse_type",
+						options: caisseOptions,
+					},
+					label: { type: "plain_text", text: "Type de Caisse" },
+				},
+				{
+					type: "input",
+					block_id: "funding_amount",
+					element: {
+						type: "plain_text_input",
+						action_id: "input_funding_amount",
+						placeholder: { type: "plain_text", text: "Ex: 1000 XOF" },
+					},
+					label: { type: "plain_text", text: "Montant" },
+				},
+				{
+					type: "input",
+					block_id: "funding_reason",
+					element: {
+						type: "plain_text_input",
+						action_id: "input_funding_reason",
+					},
+					label: { type: "plain_text", text: "Motif" },
+				},
+				{
+					type: "input",
+					block_id: "funding_date",
+					element: {
+						type: "datepicker",
+						action_id: "input_funding_date",
+					},
+					label: { type: "plain_text", text: "Date Requise" },
+				},
+			],
+		};
+
 		const response = await postSlackMessageWithRetry(
 			"https://slack.com/api/views.open",
 			{ trigger_id, view: modal },
@@ -220,9 +268,28 @@ async function handleFundingApprovalSubmission(payload, context, userName) {
 		formData.approval_action.select_approval_action.selected_option.value;
 	const chequeDetails = formData.cheque_details?.input_cheque_details?.value;
 
+	// const caisse = await Caisse.findOne({
+	// 	"fundingRequests.requestId": requestId,
+	// });
+	const caisseType =
+		formData.caisse_type.input_caisse_type.selected_option.value;
 	const caisse = await Caisse.findOne({
+		type: caisseType,
 		"fundingRequests.requestId": requestId,
 	});
+
+	if (!caisse) {
+		await postSlackMessageWithRetry(
+			"https://slack.com/api/chat.postEphemeral",
+			{
+				channel: userId,
+				user: userId,
+				text: `Caisse de type "${caisseType}" introuvable.`,
+			},
+			process.env.SLACK_BOT_TOKEN
+		);
+		return createSlackResponse(200, "");
+	}
 	const request = caisse.fundingRequests.find((r) => r.requestId === requestId);
 
 	if (!request) {
@@ -414,13 +481,28 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 
 	const reason = formData.funding_reason.input_funding_reason.value;
 	const requestedDate = formData.funding_date.input_funding_date.selected_date;
-
-	const caisse =
-		(await Caisse.findOne()) ||
-		new Caisse({
-			balances: { XOF: 0, USD: 0, EUR: 0 },
-			currency: "XOF",
-		});
+	const caisseType =
+		formData.caisse_type.input_caisse_type.selected_option.value;
+	console.log("caisseType", caisseType);
+	const caisse = await Caisse.findOne({ type: caisseType });
+	if (!caisse) {
+		await postSlackMessageWithRetry(
+			"https://slack.com/api/chat.postEphemeral",
+			{
+				channel: userId,
+				user: userId,
+				text: `Caisse de type "${caisseType}" introuvable.`,
+			},
+			process.env.SLACK_BOT_TOKEN
+		);
+		return createSlackResponse(200, "");
+	}
+	// const caisse =
+	// 	(await Caisse.findOne()) ||
+	// 	new Caisse({
+	// 		balances: { XOF: 0, USD: 0, EUR: 0 },
+	// 		currency: "XOF",
+	// 	});
 
 	// Generate requestId in format FUND/YYYY/MM/XXXX
 	const now = new Date();
@@ -514,7 +596,7 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 					type: "divider",
 				},
 				// ...fundingRequestBlocks,
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 				{
 					type: "context",
 					elements: [
@@ -563,7 +645,7 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 						emoji: true,
 					},
 				},
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 				{
 					type: "context",
 					elements: [
@@ -612,7 +694,7 @@ async function handlePreApproval(payload, context) {
 		console.error(`Request ${requestId} not found`);
 		return createSlackResponse(200, "Demande non trouvée");
 	}
-
+	const caisseType = caisse.type;
 	const request = caisse.fundingRequests[requestIndex];
 
 	// Update request status and workflow tracking
@@ -647,7 +729,7 @@ async function handlePreApproval(payload, context) {
 				{
 					type: "divider",
 				},
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 				// {
 				//   type: "section",
 				//   fields: [
@@ -734,7 +816,7 @@ async function handlePreApproval(payload, context) {
 				{
 					type: "divider",
 				},
-				...generateRequestDetailBlocks(request),
+				...generateRequestDetailBlocks(request, caisseType),
 
 				// {
 				//   type: "section",
@@ -935,7 +1017,8 @@ async function handleProblemSubmission(payload, context) {
 		request.paymentDetails.method,
 		request.paymentDetails.notes,
 		request.paymentDetails,
-		userId
+		userId,
+		caisse.type
 	);
 	await postSlackMessageWithRetry(
 		"https://slack.com/api/chat.postMessage",
@@ -1040,24 +1123,30 @@ function truncate(str, max) {
 	return str.length > max ? str.slice(0, max) + "..." : str;
 }
 // New function to generate common request detail blocks
-function generateRequestDetailBlocks(request) {
+function generateRequestDetailBlocks(request, caisseType) {
+	console.log("** generateRequestDetailBlocks");
+	console.log("requestmm ", request);
 	return [
 		{
 			type: "section",
 			fields: [
 				{
 					type: "mrkdwn",
-					text: `*Montant:*\n${request.amount} ${request.currency}`,
+					text: `*Type:*\n${caisseType || "N/A"}`, // Use caisseType if request.type is unavailable
 				},
 				{
 					type: "mrkdwn",
-					text: `*Motif:*\n${request.reason}`,
+					text: `*Montant:*\n${request.amount} ${request.currency}`,
 				},
 			],
 		},
 		{
 			type: "section",
 			fields: [
+				{
+					type: "mrkdwn",
+					text: `*Motif:*\n${request.reason}`,
+				},
 				{
 					type: "mrkdwn",
 					text: `*Date requise:*\n${new Date(
@@ -1069,15 +1158,15 @@ function generateRequestDetailBlocks(request) {
 						day: "numeric",
 					})}`,
 				},
-				{
-					type: "mrkdwn",
-					text: `*Demandeur:*\n${request.submitterName || request.submittedBy}`,
-				},
 			],
 		},
 		{
 			type: "section",
 			fields: [
+				{
+					type: "mrkdwn",
+					text: `*Demandeur:*\n${request.submitterName || request.submittedBy}`,
+				},
 				{
 					type: "mrkdwn",
 					text: `*Date de soumission:*\n${request.submittedAt.toLocaleString(
@@ -1104,7 +1193,8 @@ function generateFundingDetailsBlocks(
 	paymentMethod,
 	paymentNotes,
 	paymentDetails,
-	userId
+	userId,
+	caisseType
 ) {
 	console.log("** generateFundingDetailsBlocks");
 	console.log(
@@ -1157,7 +1247,7 @@ function generateFundingDetailsBlocks(
 			type: "divider",
 		},
 		// Call the new function to include the common request detail blocks
-		...generateRequestDetailBlocks(request),
+		...generateRequestDetailBlocks(request, caisseType),
 		{
 			type: "divider",
 		},
@@ -1259,6 +1349,65 @@ function generateFundingDetailsBlocks(
 	});
 
 	return blocks;
+}
+async function createCaisse(
+	type,
+	initialBalances = { XOF: 0, USD: 0, EUR: 0 }
+) {
+	const caisse = new Caisse({
+		type,
+		balances: initialBalances,
+		transactions: [],
+		fundingRequests: [],
+	});
+	await caisse.save();
+	return caisse;
+}
+async function transferFundsByType(
+	fromCaisseType,
+	toCaisseType,
+	amount,
+	currency,
+	context
+) {
+	const fromCaisse = await Caisse.findOne({ type: fromCaisseType });
+	const toCaisse = await Caisse.findOne({ type: toCaisseType });
+
+	if (!fromCaisse || !toCaisse) {
+		throw new Error("Une ou plusieurs caisses introuvables.");
+	}
+
+	if (fromCaisse.balances[currency] < amount) {
+		throw new Error("Fonds insuffisants dans la caisse source.");
+	}
+
+	// Déduire de la caisse source
+	fromCaisse.balances[currency] -= amount;
+	fromCaisse.transactions.push({
+		type: "Transfert Sortant",
+		amount,
+		currency,
+		details: `Transfert vers la caisse ${toCaisse.type}`,
+		timestamp: new Date(),
+	});
+
+	// Ajouter à la caisse cible
+	toCaisse.balances[currency] += amount;
+	toCaisse.transactions.push({
+		type: "Transfert Entrant",
+		amount,
+		currency,
+		details: `Transfert depuis la caisse ${fromCaisse.type}`,
+		timestamp: new Date(),
+	});
+
+	await fromCaisse.save();
+	await toCaisse.save();
+	// Synchroniser avec Excel (si applicable)
+	await syncCaisseToExcel(fromCaisse);
+	await syncCaisseToExcel(toCaisse);
+
+	return { fromCaisse, toCaisse };
 }
 // Step 4: Process finance details submission and notify admin for final approval
 async function handleFinanceDetailsSubmission(payload, context) {
@@ -1514,7 +1663,8 @@ async function handleFinanceDetailsSubmission(payload, context) {
 		paymentMethod,
 		paymentNotes,
 		paymentDetails,
-		userId
+		userId,
+		caisse.type
 	);
 
 	//! const additionalDetails =
@@ -2155,216 +2305,222 @@ async function processFundingApproval(
 }
 
 async function syncCaisseToExcel(caisse, requestId) {
-	console.log("** syncCaisseToExcel");
-	const maxRetries = 3;
-	for (let i = 0; i < maxRetries; i++) {
-		try {
-			const client = await getGraphClient();
-			const siteId = await getSiteId();
-			const driveId = await getDriveId(siteId);
-			const fileId = process.env.CAISSE_EXCEL_FILE_ID;
-			const tableName = process.env.CAISSE_TABLE_NAME || "";
+	if (process.env.NODE_ENV === "production") {
+		console.log("** syncCaisseToExcel");
+		const maxRetries = 3;
+		for (let i = 0; i < maxRetries; i++) {
+			try {
+				const client = await getGraphClient();
+				const siteId = await getSiteId();
+				const driveId = await getDriveId(siteId);
+				const fileId = process.env.CAISSE_EXCEL_FILE_ID;
+				const tableName = process.env.CAISSE_TABLE_NAME || "";
 
-			const request = caisse.fundingRequests.find(
-				(r) => r.requestId === requestId
-			);
-			if (!request) throw new Error(`Funding request ${requestId} not found`);
-			// Prepare cheque details as a single string (if applicable)
-			let paymentDetailsString = "";
-			if (
-				request.paymentDetails?.method &&
-				["cheque", "Chèque"].includes(request.paymentDetails.method) &&
-				request.paymentDetails.cheque
-			) {
-				const cheque = request.paymentDetails.cheque;
-				const fields = [
-					cheque.number ? `- Numéro du chèque: ${cheque.number}` : null,
-					cheque.bank ? `- Banque: ${cheque.bank}` : null,
-					cheque.date ? `- Date du chèque: ${cheque.date}` : null,
-					cheque.order ? `- Ordre: ${cheque.order}` : null,
+				const request = caisse.fundingRequests.find(
+					(r) => r.requestId === requestId
+				);
+				if (!request) throw new Error(`Funding request ${requestId} not found`);
+				// Prepare cheque details as a single string (if applicable)
+				let paymentDetailsString = "";
+				if (
+					request.paymentDetails?.method &&
+					["cheque", "Chèque"].includes(request.paymentDetails.method) &&
+					request.paymentDetails.cheque
+				) {
+					const cheque = request.paymentDetails.cheque;
+					const fields = [
+						cheque.number ? `- Numéro du chèque: ${cheque.number}` : null,
+						cheque.bank ? `- Banque: ${cheque.bank}` : null,
+						cheque.date ? `- Date du chèque: ${cheque.date}` : null,
+						cheque.order ? `- Ordre: ${cheque.order}` : null,
+					];
+					// Add file IDs information
+					if (cheque.file_ids && cheque.file_ids.length > 0) {
+						fields.push(
+							`- Fichiers: ${cheque.file_ids.length} fichier(s) associé(s)`
+						);
+						// Optionally include file URLs (truncated)
+						fields.push(
+							`- Liens des fichiers:\n${cheque.file_ids
+								.map((url) => `- ${truncate(url, 50)}`)
+								.join("\n")}`
+						);
+					}
+
+					// Add URLs information
+					if (cheque.urls && cheque.urls.length > 0) {
+						fields.push(`- URLs: ${cheque.urls.join(", ")}`);
+					}
+					paymentDetailsString = fields.filter(Boolean).join("\n");
+				}
+
+				const rowData = [
+					request.requestId, // Request ID
+					caisse.type,
+					request.amount || 0, // Amount
+					request.currency || "XOF", // Currency
+					request.reason || "", // Reason
+					request.status || "En attente", // Status
+					request.rejectionReason || "", // Status
+
+					new Date(request.requestedDate).toLocaleString("fr-FR", {
+						weekday: "long",
+						year: "numeric",
+						month: "long",
+						day: "numeric",
+					}) || new Date().toISOString(), // Date requise (same as Requested Date)
+					request.submittedBy || "", // Submitted By
+					request.submittedAt
+						? new Date(request.submittedAt).toLocaleString("fr-FR", {
+								weekday: "long",
+								year: "numeric",
+								month: "long",
+								day: "numeric",
+								hour: "2-digit",
+								minute: "2-digit",
+								timeZoneName: "short",
+						  })
+						: "", // Submitted At
+					request.approvedBy || "", // Approved By
+					request.approvedAt
+						? new Date(request.approvedAt).toLocaleString("fr-FR", {
+								weekday: "long",
+								year: "numeric",
+								month: "long",
+								day: "numeric",
+								hour: "2-digit",
+								minute: "2-digit",
+								timeZoneName: "short",
+						  })
+						: "", // Approved At
+
+					request.paymentDetails.notes || "", // Notes
+					request.disbursementType || "", // Disbursement Type
+					paymentDetailsString || "", // 15: Détails de Paiement
+					caisse.balances.XOF || 0, // Balance XOF
+					caisse.balances.USD || 0, // Balance USD
+					caisse.balances.EUR || 0, // Balance EUR
+					"Yes", // Latest Update
 				];
-				// Add file IDs information
-				if (cheque.file_ids && cheque.file_ids.length > 0) {
-					fields.push(
-						`- Fichiers: ${cheque.file_ids.length} fichier(s) associé(s)`
-					);
-					// Optionally include file URLs (truncated)
-					fields.push(
-						`- Liens des fichiers:\n${cheque.file_ids
-							.map((url) => `- ${truncate(url, 50)}`)
-							.join("\n")}`
-					);
-				}
-
-				// Add URLs information
-				if (cheque.urls && cheque.urls.length > 0) {
-					fields.push(`- URLs: ${cheque.urls.join(", ")}`);
-				}
-				paymentDetailsString = fields.filter(Boolean).join("\n");
-			}
-
-			const rowData = [
-				request.requestId, // Request ID
-				request.amount || 0, // Amount
-				request.currency || "XOF", // Currency
-				request.reason || "", // Reason
-				request.status || "En attente", // Status
-				request.rejectionReason || "", // Status
-
-				new Date(request.requestedDate).toLocaleString("fr-FR", {
-					weekday: "long",
-					year: "numeric",
-					month: "long",
-					day: "numeric",
-				}) || new Date().toISOString(), // Date requise (same as Requested Date)
-				request.submittedBy || "", // Submitted By
-				request.submittedAt
-					? new Date(request.submittedAt).toLocaleString("fr-FR", {
-							weekday: "long",
-							year: "numeric",
-							month: "long",
-							day: "numeric",
-							hour: "2-digit",
-							minute: "2-digit",
-							timeZoneName: "short",
-					  })
-					: "", // Submitted At
-				request.approvedBy || "", // Approved By
-				request.approvedAt
-					? new Date(request.approvedAt).toLocaleString("fr-FR", {
-							weekday: "long",
-							year: "numeric",
-							month: "long",
-							day: "numeric",
-							hour: "2-digit",
-							minute: "2-digit",
-							timeZoneName: "short",
-					  })
-					: "", // Approved At
-
-				request.paymentDetails.notes || "", // Notes
-				request.disbursementType || "", // Disbursement Type
-				paymentDetailsString || "", // 15: Détails de Paiement
-				caisse.balances.XOF || 0, // Balance XOF
-				caisse.balances.USD || 0, // Balance USD
-				caisse.balances.EUR || 0, // Balance EUR
-				"Yes", // Latest Update
-			];
-			console.log(
-				`[Excel Integration] Updating row for request ${requestId} with data:`,
-				JSON.stringify(rowData, null, 2)
-			);
-			// Fetch all rows to find the current and previous latest rows
-			console.log(
-				"[Excel Integration] Fetching table rows for requestId:",
-				requestId
-			);
-			const tableRows = await client
-				.api(
-					`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
-				)
-				.get();
-
-			// Fetch table columns
-			const tableColumns = await client
-				.api(
-					`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/columns`
-				)
-				.get();
-			const columnCount = tableColumns.value.length;
-
-			// Validate rowData length
-			if (rowData.length !== columnCount) {
-				console.error(
-					`[Excel Integration] Error: rowData has ${rowData.length} columns, but table expects ${columnCount}`
-				);
-				throw new Error(
-					"Column count mismatch between rowData and table structure"
-				);
-			}
-			let rowIndex = -1;
-			let previousLatestIndex = -1;
-			if (tableRows && tableRows.value) {
-				rowIndex = tableRows.value.findIndex(
-					(row) => row.values && row.values[0] && row.values[0][0] === requestId // Adjusted index: Request ID is now at 0
-				);
-				if (caisse.latestRequestId && caisse.latestRequestId !== requestId) {
-					previousLatestIndex = tableRows.value.findIndex(
-						(row) =>
-							row.values &&
-							row.values[0] &&
-							row.values[0][0] === caisse.latestRequestId
-					);
-				}
-			}
-
-			// Update previous latest row to "No" (if it exists)
-			if (previousLatestIndex >= 0 && previousLatestIndex !== rowIndex) {
-				const previousRowValues =
-					tableRows.value[previousLatestIndex].values[0];
-				if (previousRowValues.length >= 15) {
-					// Adjusted for 15 columns
-					previousRowValues[17] = " "; // Adjusted index: Latest Update is now at 14
-					console.log(
-						"[Excel Integration] Updating previous latest row to 'No':",
-						caisse.latestRequestId
-					);
-					await client
-						.api(
-							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${previousLatestIndex})`
-						)
-						.patch({ values: [previousRowValues] });
-				}
-			}
-
-			// Update or add the current row
-			if (rowIndex >= 0) {
 				console.log(
-					"[Excel Integration] Updating existing row for requestId:",
+					`[Excel Integration] Updating row for request ${requestId} with data:`,
+					JSON.stringify(rowData, null, 2)
+				);
+				// Fetch all rows to find the current and previous latest rows
+				console.log(
+					"[Excel Integration] Fetching table rows for requestId:",
 					requestId
 				);
-				await client
-					.api(
-						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${rowIndex})`
-					)
-					.patch({ values: [rowData] });
-			} else {
-				console.log(
-					"[Excel Integration] Adding new row for requestId:",
-					requestId
-				);
-				await client
+				const tableRows = await client
 					.api(
 						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
 					)
-					.post({ values: [rowData] });
-			}
+					.get();
 
-			// Update latestRequestId in the database
-			caisse.latestRequestId = requestId;
-			console.log(
-				"[Excel Integration] Updating latestRequestId to:",
-				requestId
-			);
-			await caisse.save();
+				// Fetch table columns
+				const tableColumns = await client
+					.api(
+						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/columns`
+					)
+					.get();
+				const columnCount = tableColumns.value.length;
 
-			console.log(
-				"[Excel Integration] Excel sync completed for requestId:",
-				requestId
-			);
-			return;
-		} catch (error) {
-			console.error("[Excel Integration] Error in syncCaisseToExcel:", {
-				message: error.message,
-				stack: error.stack,
-				attempt: i + 1,
-				requestId,
-			});
-			if (i === maxRetries - 1) {
-				throw new Error(`Excel sync failed: ${error.message}`);
+				// Validate rowData length
+				if (rowData.length !== columnCount) {
+					console.error(
+						`[Excel Integration] Error: rowData has ${rowData.length} columns, but table expects ${columnCount}`
+					);
+					throw new Error(
+						"Column count mismatch between rowData and table structure"
+					);
+				}
+				let rowIndex = -1;
+				let previousLatestIndex = -1;
+				if (tableRows && tableRows.value) {
+					rowIndex = tableRows.value.findIndex(
+						(row) =>
+							row.values && row.values[0] && row.values[0][0] === requestId // Adjusted index: Request ID is now at 0
+					);
+					if (caisse.latestRequestId && caisse.latestRequestId !== requestId) {
+						previousLatestIndex = tableRows.value.findIndex(
+							(row) =>
+								row.values &&
+								row.values[0] &&
+								row.values[0][0] === caisse.latestRequestId
+						);
+					}
+				}
+
+				// Update previous latest row to "No" (if it exists)
+				if (previousLatestIndex >= 0 && previousLatestIndex !== rowIndex) {
+					const previousRowValues =
+						tableRows.value[previousLatestIndex].values[0];
+					if (previousRowValues.length >= 15) {
+						// Adjusted for 15 columns
+						previousRowValues[17] = " "; // Adjusted index: Latest Update is now at 14
+						console.log(
+							"[Excel Integration] Updating previous latest row to 'No':",
+							caisse.latestRequestId
+						);
+						await client
+							.api(
+								`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${previousLatestIndex})`
+							)
+							.patch({ values: [previousRowValues] });
+					}
+				}
+
+				// Update or add the current row
+				if (rowIndex >= 0) {
+					console.log(
+						"[Excel Integration] Updating existing row for requestId:",
+						requestId
+					);
+					await client
+						.api(
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${rowIndex})`
+						)
+						.patch({ values: [rowData] });
+				} else {
+					console.log(
+						"[Excel Integration] Adding new row for requestId:",
+						requestId
+					);
+					await client
+						.api(
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
+						)
+						.post({ values: [rowData] });
+				}
+
+				// Update latestRequestId in the database
+				caisse.latestRequestId = requestId;
+				console.log(
+					"[Excel Integration] Updating latestRequestId to:",
+					requestId
+				);
+				await caisse.save();
+
+				console.log(
+					"[Excel Integration] Excel sync completed for requestId:",
+					requestId
+				);
+				return;
+			} catch (error) {
+				console.error("[Excel Integration] Error in syncCaisseToExcel:", {
+					message: error.message,
+					stack: error.stack,
+					attempt: i + 1,
+					requestId,
+				});
+				if (i === maxRetries - 1) {
+					throw new Error(`Excel sync failed: ${error.message}`);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 1000));
 			}
-			await new Promise((resolve) => setTimeout(resolve, 1000));
 		}
+	} else {
+		console.log("** syncCaisseToExcel - Skipped in non-production environment");
 	}
 }
 
@@ -2403,6 +2559,7 @@ async function generateCaisseReport(context, format = "csv") {
 	} else {
 		// Excel export
 		await syncCaisseToExcel(caisse);
+
 		return "Report synced to Excel";
 	}
 }
@@ -2763,4 +2920,6 @@ module.exports = {
 	getProblemTypeText,
 	generateFundingDetailsBlocks,
 	generateRequestDetailBlocks,
+	createCaisse,
+	transferFundsByType,
 };

@@ -329,7 +329,8 @@ console.log("request", request);
 							request.disbursementType,
 							request.paymentDetails.notes,
 							request.paymentDetails,
-							userId
+							userId,
+							caisse.type
 						);
 						// Update original message
 						await postSlackMessageWithRetry(
