@@ -3,7 +3,7 @@ const axios = require("axios");
 const crypto = require("crypto");
 require("dotenv").config();
 function  createSlackResponse(statusCode, body) {
-  console.log("** createSlackResponse");
+  // console.log("** createSlackResponse");
   if (typeof body === "string") {
     return {
       statusCode,

@@ -11,10 +11,11 @@ const {
 const axios = require("axios");
 
 // Order Status Management
-async function handleOrderStatus(payload, action, context) {
+async function handleOrderStatus(payload, comment, action, context) {
 	console.log("** handleOrderStatus");
 	console.log("payload", payload);
 	console.log("action", action);
+	console.log("==: comment", comment);
 
 	let paymentId;
 	// Handle funds received confirmation
@@ -128,9 +129,10 @@ async function handleOrderStatus(payload, action, context) {
 			body: JSON.stringify({ response_action: "clear" }),
 		};
 		await postSlackMessage(
-			"https://slack.com/api/chat.postMessage",
+			"https://slack.com/api/chat.postEphemeral",
 			{
 				channel: process.env.SLACK_ADMIN_ID,
+				user: payload.user.id, // Specify the user ID to make the message ephemeral
 				text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
 			},
 			process.env.SLACK_BOT_TOKEN
@@ -211,7 +213,7 @@ async function handleOrderStatus(payload, action, context) {
 		process.env.SLACK_BOT_TOKEN,
 		context
 	);
-	await notifyTeams(payload, updatedOrder, context);
+	await notifyTeams(payload, comment, updatedOrder, context);
 
 	return { response_action: "clear" };
 }

@@ -156,6 +156,8 @@ const OrderSchema = new mongoose.Schema(
 		totalAmount: { type: Number, required: false },
 		payments: [
 			{
+				paymentNumber: { type: String, required: false }, // e.g., "PAY/2025/03/0001"
+				decaissementNumber: { type: String, required: false }, // e.g., "DEC/2025/03/0001"
 				paymentMode: { type: String, required: false }, // e.g., "Chèque", "Virement", etc.
 				amountPaid: { type: Number, required: false },
 				paymentTitle: { type: String, required: false }, // e.g., "Acompte 1"
@@ -730,24 +732,93 @@ const fundingRequestSchema = new mongoose.Schema({
 	},
 });
 
+// Add the transfer request schema
+const transferRequestSchema = new mongoose.Schema({
+	transferId: { type: String, required: true },
+	fromCaisse: { type: String, required: true }, // Channel ID of source caisse
+	toCaisse: { type: String, required: true }, // Channel ID of destination caisse
+	currency: { type: String, required: true },
+	amount: { type: Number, required: true },
+	motif: { type: String, required: true },
+	paymentMode: { type: String, required: true }, // Should be "espece" only
+	submittedBy: { type: String, required: true },
+	submittedByID: { type: String, required: true },
+	status: {
+		type: String,
+		required: true,
+		default: "En attente",
+		enum: ["En attente", "Approuvé", "Rejeté"],
+	},
+	submittedAt: { type: Date, default: Date.now },
+	approvedBy: { type: String },
+	approvedAt: { type: Date },
+	rejectedBy: { type: String },
+	rejectedAt: { type: Date },
+	rejectionReason: { type: String },
+	workflow: {
+		stage: { type: String, required: true, default: "initial_request" },
+		history: [
+			{
+				stage: { type: String, required: true },
+				timestamp: { type: Date, default: Date.now },
+				actor: { type: String, required: true },
+				details: { type: String },
+			},
+		],
+	},
+});
+
 const transactionSchema = new mongoose.Schema({
 	type: { type: String, required: true },
 	amount: { type: Number, required: true },
 	currency: { type: String, required: true },
 	requestId: { type: String },
 	orderId: { type: String },
+	transferId: { type: String }, // Add this for transfer transactions
+
+	paymentNumber: { type: String }, // e.g., "PAY/2025/03/0001"
+	decaissementNumber: { type: String }, // e.g., "DEC/202
 	details: { type: String },
 	timestamp: { type: Date, default: Date.now },
 	paymentMethod: { type: String },
 	paymentDetails: { type: mongoose.Schema.Types.Mixed },
+	accountingRequired: { type: String }, 
+	transferDetails: { // Add transfer-specific details
+        from: { type: String }, // Source caisse channel ID
+        to: { type: String }, // Destination caisse channel ID
+        motif: { type: String }, // Transfer reason
+        approvedBy: { type: String }, // Who approved the transfer
+    },
 });
+const PaymentCounterSchema = new mongoose.Schema({
+	periodId: { type: String, required: true, unique: true },
+	sequence: { type: Number, default: 0 },
+});
+
+const DecaissementCounterSchema = new mongoose.Schema({
+	periodId: { type: String, required: true, unique: true },
+	sequence: { type: Number, default: 0 },
+});
+
+const PaymentCounter = mongoose.model("PaymentCounter", PaymentCounterSchema);
+const DecaissementCounter = mongoose.model(
+	"DecaissementCounter",
+	DecaissementCounterSchema
+);
 
 const caisseSchema = new mongoose.Schema({
 	type: {
 		type: String,
 		required: true,
 	},
-
+	channelId: {
+		type: String, // Slack channel ID associated with the caisse
+		required: true,
+	},
+	channelName: {
+		type: String, // Slack channel name associated with the caisse
+		required: true,
+	},
 	balances: {
 		XOF: { type: Number, default: 0 },
 		USD: { type: Number, default: 0 },
@@ -755,6 +826,7 @@ const caisseSchema = new mongoose.Schema({
 	},
 	latestRequestId: { type: String },
 	fundingRequests: [fundingRequestSchema],
+	transferRequests: [transferRequestSchema], 
 	transactions: [transactionSchema],
 });
 
@@ -770,4 +842,6 @@ module.exports = {
 	Caisse,
 	Config,
 	UserRole,
+	PaymentCounter,
+	DecaissementCounter,
 };

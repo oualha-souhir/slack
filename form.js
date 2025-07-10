@@ -1,7 +1,7 @@
 //src/form.js
 const { postSlackMessage, createSlackResponse } = require("./utils");
 const { getFileInfo } = require("./utils");
-const { Order } = require("./db"); // Import Order model
+const { Order, PaymentRequest } = require("./db"); // Import Order model
 const {
 	getEquipeOptions,
 	getUnitOptions,
@@ -605,19 +605,138 @@ async function generatePaymentForm({
 	context,
 	selectedPaymentMode,
 	orderId,
+	selectedCaisseId,
 }) {
 	console.log("** ''generatePaymentForm");
 	context.log("Opening payment modal for order:", action.value);
 	context.log("Génération du formulaire pour le mode:", selectedPaymentMode);
-
+	console.log("selectedCaisseId::::", selectedCaisseId);
 	// Parse private_metadata if available (for updates from modal)
 	const privateMetadata = payload.view
 		? JSON.parse(payload.view.private_metadata || "{}")
 		: {};
-	const effectiveOrderId = orderId || privateMetadata.orderId || action.value;
+	let orderRemainingAmount;
+	let orderCurrency; // Default currency
+	// const effectiveOrderId = orderId || privateMetadata.orderId || action.value;
+	const effectiveOrderId = (() => {
+		// Handle case where orderId is an object
+		if (orderId && typeof orderId === "object") {
+			return orderId.entityId || orderId.id || orderId.orderId;
+		}
+
+		// Handle case where privateMetadata.orderId is an object
+		if (
+			privateMetadata.orderId &&
+			typeof privateMetadata.orderId === "object"
+		) {
+			return (
+				privateMetadata.orderId.entityId ||
+				privateMetadata.orderId.id ||
+				privateMetadata.orderId.orderId
+			);
+		}
+
+		// Handle case where action.value is an object (parse if it's a JSON string)
+		let actionValue = action?.value;
+		if (typeof actionValue === "string") {
+			try {
+				const parsed = JSON.parse(actionValue);
+				if (typeof parsed === "object" && parsed.entityId) {
+					return parsed.entityId;
+				}
+			} catch (e) {
+				// If parsing fails, treat as regular string
+			}
+		} else if (typeof actionValue === "object" && actionValue?.entityId) {
+			return actionValue.entityId;
+		}
+
+		// Fallback to original string values
+		return orderId || privateMetadata.orderId || actionValue;
+	})();
+	console.log("ùùù Effective order ID:", effectiveOrderId);
+	if (effectiveOrderId) {
+		try {
+			// First try to find as an order
+			const order = await Order.findOne({ id_commande: effectiveOrderId });
+			if (order) {
+				console.log("ùùù Order found:", order);
+
+				orderRemainingAmount = order.remainingAmount || 0;
+				console.log("ùùù Order remaining amount:", orderRemainingAmount);
+
+				// If remaining amount is 0, get amount from validated proforma
+				if (
+					orderRemainingAmount === 0 &&
+					order.proformas &&
+					order.proformas.length > 0
+				) {
+					const validatedProforma = order.proformas.find(
+						(proforma) => proforma.validated === true
+					);
+					if (validatedProforma && validatedProforma.montant) {
+						orderRemainingAmount = validatedProforma.montant;
+						console.log(
+							"ùùù Using validated proforma amount:",
+							orderRemainingAmount
+						);
+					}
+				}
+
+				// If you want to get the currency from the order's proformas or payments
+				orderCurrency = order.proformas?.[0]?.devise || "XOF"; // Default to XOF
+				console.log("ùùù Order currency:", orderCurrency);
+			} else {
+				// If not found as order, try to find as payment request
+				const paymentRequest = await PaymentRequest.findOne({
+					id_paiement: effectiveOrderId,
+				});
+
+				if (paymentRequest) {
+					// Handle payment request data
+					orderRemainingAmount = paymentRequest.remainingAmount || 0;
+					console.log(
+						"ùùù Payment request remaining amount:",
+						orderRemainingAmount
+					);
+					orderCurrency = paymentRequest.devise || "XOF";
+					if (orderRemainingAmount === 0) {
+						orderRemainingAmount = paymentRequest.montant;
+						console.log(
+							"ùùù Using validated proforma amount:",
+							orderRemainingAmount
+						);
+					}
+
+					console.log("ùùù Payment request currency:", orderCurrency);
+				}
+			}
+		} catch (error) {
+			context.log("ùùù Error fetching order/payment remaining amount:", error);
+		}
+	}
+
 	const originalChannel =
 		privateMetadata.originalChannel || (payload.channel && payload.channel.id);
-
+	let caisseBalance = null;
+	let caisseName = null;
+	if (selectedCaisseId) {
+		try {
+			const { Caisse } = require("./db"); // Add this import at the top of the file
+			const caisse = await Caisse.findById(selectedCaisseId);
+			if (caisse) {
+				// Get all three currency balances
+				caisseBalance = {
+					XOF: caisse.balances.XOF || 0,
+					USD: caisse.balances.USD || 0,
+					EUR: caisse.balances.EUR || 0,
+				};
+				caisseName = caisse.type || "Caisse sélectionnée";
+			}
+		} catch (error) {
+			context.log("Error fetching caisse balance:", error);
+		}
+	}
 	// Determine payment method code
 	const validPaymentMethods = [
 		"Espèces",
@@ -640,6 +759,37 @@ async function generatePaymentForm({
 		return methodMap[method] || method;
 	};
 	const baseBlocks = [
+		// Add caisse balance display block if balance is available
+		...(caisseBalance !== null || orderRemainingAmount !== null
+			? [
+					{
+						type: "section",
+						block_id: "caisse_info",
+						text: {
+							type: "mrkdwn",
+							text: `${
+								caisseBalance !== null
+									? `Caisse *${caisseName}*\n XOF: *${caisseBalance.XOF.toLocaleString()} XOF* | USD: *${caisseBalance.USD.toLocaleString()} USD* | EUR: *${caisseBalance.EUR.toLocaleString()} EUR*`
+									: ""
+							}${
+								caisseBalance !== null && orderRemainingAmount !== null
+									? "\n\n"
+									: ""
+							}${
+								orderRemainingAmount !== null
+									? `*=> Montant restant* ${(
+											orderRemainingAmount || 0
+									  ).toLocaleString()} ${orderCurrency}`
+									: ""
+							}`,
+						},
+					},
+					{
+						type: "divider",
+					},
+			  ]
+			: []),
+
 		{
 			type: "input",
 			block_id: "payment_mode",
@@ -841,6 +991,22 @@ async function generatePaymentForm({
 				},
 				{
 					type: "input",
+					block_id: "mobilemoney_fees",
+					label: { type: "plain_text", text: "Frais" },
+					element: {
+						type: "number_input",
+						is_decimal_allowed: true,
+						min_value: "0",
+						action_id: "input_mobilemoney_fees",
+						placeholder: {
+							type: "plain_text",
+							text: "Montant des frais",
+						},
+					},
+					
+				},
+				{
+					type: "input",
 					block_id: "mobilemoney_date",
 					label: { type: "plain_text", text: "Date" },
 					element: { type: "datepicker", action_id: "input_mobilemoney_date" },
@@ -1036,6 +1202,7 @@ async function generatePaymentForm({
 		private_metadata: JSON.stringify({
 			orderId: effectiveOrderId,
 			originalChannel: originalChannel,
+			selectedCaisseId: selectedCaisseId,
 		}),
 	};
 

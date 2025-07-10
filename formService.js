@@ -8,6 +8,7 @@ const {
 	deductCashForPayment,
 } = require("./caisseService");
 const { generateFundingRequestForm } = require("./caisseService");
+const { WebClient } = require("@slack/web-api");
 
 const {
 	generateOrderForm,
@@ -354,7 +355,7 @@ async function handleProformaValidationRequest(payload, context) {
 							proformaIndex: value.proformaIndex,
 							proformaName: value.proformaName, // Optional, for display
 							proformaAmount: value.proformaAmount, // Optional, for display
-							msgts:msgts
+							msgts: msgts,
 						}),
 						title: {
 							type: "plain_text",
@@ -591,9 +592,22 @@ async function fetchEntity(entityId, context) {
 // Handler for the "report_problem" button click
 async function handleReportProblem(payload, context, messageTs) {
 	console.log("** handleReportProblem");
-	const entityId = payload.actions[0].value;
+	console.log("=== payload.actions", payload.actions);
+	console.log("=== payload", payload);
+	let entityId, selectedCaisseId;
+	const actionValue = payload.actions[0].value;
 	const actionId = payload.actions[0].action_id;
-	console.log("payload", payload);
+
+	// Parse the action value which might be JSON or a simple string
+	try {
+		const parsedValue = JSON.parse(actionValue);
+		entityId = parsedValue.entityId;
+		selectedCaisseId = parsedValue.selectedCaisseId;
+	} catch (parseError) {
+		// If parsing fails, assume it's a simple entityId string
+		entityId = actionValue;
+		selectedCaisseId = null;
+	}
 	// Determine the callback_id based on which action triggered this handler
 	const callback_id =
 		actionId === "report_fund_problem"
@@ -604,6 +618,7 @@ async function handleReportProblem(payload, context, messageTs) {
 		let entity;
 		let request;
 		if (callback_id == "payment_problem_submission") {
+			console.log("===+ callback_id == payment_problem_submission");
 			// Fetch entity data (order or payment request)
 			entity = await fetchEntity(entityId, context);
 			if (!entity) {
@@ -616,8 +631,12 @@ async function handleReportProblem(payload, context, messageTs) {
 				};
 			}
 		} else if (callback_id == "fund_problem_submission") {
+			const { requestId, caisseType } = JSON.parse(payload.actions[0].value);
+			console.log("requestId mmmmmm2", requestId);
+			console.log("caisseType mmmmmm2", caisseType);
 			entity = await Caisse.findOne({
-				"fundingRequests.requestId": entityId,
+				type: caisseType, // Match by caisseType
+				"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 			});
 			request = entity.fundingRequests.find((r) => r.requestId === entityId);
 			if (request.status === "Validé") {
@@ -635,24 +654,27 @@ async function handleReportProblem(payload, context, messageTs) {
 				return {};
 			}
 		}
-
-		if (
-			callback_id == "payment_problem_submission" &&
-			entity.paymentDone == "true"
-		) {
-			context.log(`Payment blocked for order ${entityId}`);
-			await postSlackMessageWithRetry(
-				"https://slack.com/api/chat.postEphemeral",
-				{
-					channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-					user: payload.user.id,
-					text: `🚫 La commande a été payée`,
-				},
-				process.env.SLACK_BOT_TOKEN,
-				context
-			);
-			return {};
-		} else {
+		//!
+		// if (
+		// 	callback_id == "payment_problem_submission" &&
+		// 	entity.paymentDone == "true"
+		// ) {
+		// 	context.log(`Payment blocked for order ${entityId}`);
+		// 	await postSlackMessageWithRetry(
+		// 		"https://slack.com/api/chat.postEphemeral",
+		// 		{
+		// 			channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+		// 			user: payload.user.id,
+		// 			text: `🚫 La commande a été payée`,
+		// 		},
+		// 		process.env.SLACK_BOT_TOKEN,
+		// 		context
+		// 	);
+		// 	return {};
+		// } else {
+		//!
+		if (callback_id == "payment_problem_submission") {
+			console.log("===+ 2 callback_id == payment_problem_submission");
 			// // Get the last payment
 			// const lastPayment = entity.payments[entity.payments.length - 1];
 
@@ -670,6 +692,7 @@ async function handleReportProblem(payload, context, messageTs) {
 					channelId: payload.channel.id,
 					userId: payload.user.username,
 					messageTs: messageTs,
+					selectedCaisseId: selectedCaisseId,
 				}),
 				title: {
 					type: "plain_text",
@@ -2855,7 +2878,8 @@ async function generateFundingApprovalPaymentModal(
 	trigger_id,
 	messageTs,
 	requestId,
-	channelId
+	channelId,
+	caisseType
 ) {
 	console.log(
 		`** generateFundingApprovalPaymentModal - messageTs: ${messageTs}, channelId: ${
@@ -2865,9 +2889,9 @@ async function generateFundingApprovalPaymentModal(
 
 	// Find the funding request in the database
 	const caisse = await Caisse.findOne({
-		"fundingRequests.requestId": requestId,
+		type: caisseType, // Match by caisseType
+		"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 	});
-
 	if (!caisse) {
 		console.error(`Caisse not found for request ${requestId}`);
 		return;
@@ -2882,6 +2906,7 @@ async function generateFundingApprovalPaymentModal(
 	const metadata = JSON.stringify({
 		requestId: requestId,
 		messageTs: messageTs,
+		caisseType: caisseType,
 		channelId: channelId,
 		amount: request.amount, // Include amount
 		currency: request.currency, // Include currency
@@ -2960,7 +2985,29 @@ async function generateFundingApprovalPaymentModal(
 		console.error(`Error opening modal for ${requestId}:`, error);
 	}
 }
+// Handler for radio button selection - this will be called when user selects a payment method
+async function handlePaymentMethodSelection1(body) {
+	const { view, actions } = body;
+	const selectedValue = actions[0].selected_option.value;
+	const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
+	// Parse the existing metadata
+	const metadata = JSON.parse(view.private_metadata);
+
+	// Update the modal with the new selection
+	const updatedView = await createPaymentConfirmationModal(
+		metadata.paymentId,
+		metadata.action === "accept",
+		metadata.message_ts,
+		selectedValue
+	);
+
+	// Update the modal view
+	await client.views.update({
+		view_id: body.view.id,
+		view: updatedView,
+	});
+}
 // Function to handle the block actions for payment method selection
 async function handlePaymentMethodSelection(payload, context) {
 	console.log("** handlePaymentMethodSelection");
@@ -3418,7 +3465,7 @@ async function processFundingApprovalWithPayment(
 	return true;
 }
 // Function to open a modal for rejection reason
-async function openRejectionReasonModalFund(payload, requestId) {
+async function openRejectionReasonModalFund(payload, requestId, caisseType) {
 	console.log("** openRejectionReasonModalFund");
 	try {
 		await postSlackMessage(
@@ -3431,6 +3478,7 @@ async function openRejectionReasonModalFund(payload, requestId) {
 
 					private_metadata: JSON.stringify({
 						requestId: requestId,
+						caisseType: caisseType,
 						channel_id: payload.channel.id,
 						message_ts: payload.message.ts,
 					}),
@@ -3487,13 +3535,19 @@ async function openRejectionReasonModalFund(payload, requestId) {
 // New function to open a confirmation dialog
 async function openPreApprovalConfirmationDialog(payload) {
 	console.log("** openPreApprovalConfirmationDialog");
-	const requestId = payload.actions[0].value;
+	console.log("payload mmmmmm", payload);
+	const { requestId, caisseType } = JSON.parse(payload.actions[0].value);
+	console.log("requestId mmmmmm", requestId);
+	console.log("caisseType mmmmmm", caisseType);
 
 	try {
 		// Find the funding request to show details in confirmation
 		const caisse = await Caisse.findOne({
-			"fundingRequests.requestId": requestId,
+			type: caisseType, // Match by caisseType
+			"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 		});
+		console.log("caisse mmmmmm", caisse);
+
 		console.log("requestId1", requestId);
 		if (!caisse) {
 			console.error(`Caisse not found for request ${requestId}`);
@@ -3526,6 +3580,7 @@ async function openPreApprovalConfirmationDialog(payload) {
 			],
 			private_metadata: JSON.stringify({
 				requestId,
+				caisseType,
 				action: "accept",
 				messageTs: payload.message.ts,
 			}),
@@ -3727,14 +3782,17 @@ async function handlePreApprovalAfterConfirmation(payload, context) {
 async function openFinalApprovalConfirmationDialog(payload) {
 	console.log("** openFinalApprovalConfirmationDialog");
 	const action = payload.actions[0];
-	const requestId = action.value;
+	// const requestId = action.value;
 
+	const { requestId, caisseType } = JSON.parse(payload.actions[0].value);
+	console.log("requestId mmmmmm1", requestId);
+	console.log("caisseType mmmmmm1", caisseType);
 	try {
 		// Find the funding request to show details in confirmation
 		const caisse = await Caisse.findOne({
-			"fundingRequests.requestId": requestId,
+			type: caisseType, // Match by caisseType
+			"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 		});
-
 		if (!caisse) {
 			console.error(`Caisse not found for request ${requestId}`);
 			return;
@@ -3779,6 +3837,7 @@ async function openFinalApprovalConfirmationDialog(payload) {
 			],
 			private_metadata: JSON.stringify({
 				requestId: requestId,
+				caisseType: caisseType,
 				messageTs: payload.message.ts,
 				channelId: payload.channel.id,
 			}),
@@ -4020,6 +4079,7 @@ async function handleModifyPayment(
 	selectedPaymentMode = null
 ) {
 	console.log("** handleModifyPayment");
+	console.log("===$ 2 payload", payload);
 	try {
 		let actionValue;
 		// Determine if this is triggered by "confirm_payment_mode_2" or an initial action
@@ -4050,15 +4110,16 @@ async function handleModifyPayment(
 			// For initial action, use actions[0].value
 			actionValue = JSON.parse(payload.actions[0]?.value || "{}");
 		}
-
+		console.log("===$ actionValue 4", actionValue);
 		const {
 			entityId,
 			paymentIndex,
 			problemType,
 			problemDescription,
 			reporterId,
+			selectedCaisseId,
 		} = actionValue;
-		console.log("problemType", problemType);
+		console.log("===$ selectedCaisseId", selectedCaisseId);
 
 		// Fetch the entity
 		const entity = await fetchEntity(entityId, context);
@@ -4069,6 +4130,9 @@ async function handleModifyPayment(
 		// Get payment data
 		const paymentData = entity.payments[paymentIndex];
 		const details = paymentData.details || {};
+		console.log("===$ paymentData", paymentData);
+		console.log("===$ paymentIndex", paymentIndex);
+		console.log("===$ entity", entity);
 
 		// Determine the payment mode to use
 		const paymentMode =
@@ -4469,6 +4533,21 @@ async function handleModifyPayment(
 				},
 				{
 					type: "input",
+					block_id: "mobilemoney_fees",
+					label: { type: "plain_text", text: "Frais" },
+					element: {
+						type: "number_input",
+						is_decimal_allowed: true,
+						min_value: "0",
+						action_id: "input_mobilemoney_fees",
+						placeholder: {
+							type: "plain_text",
+							text: "Montant des frais",
+						},
+					},
+				},
+				{
+					type: "input",
 					block_id: "mobilemoney_date",
 					label: {
 						type: "plain_text",
@@ -4561,6 +4640,7 @@ async function handleModifyPayment(
 				existingUrls: paymentData.paymentUrl ? [paymentData.paymentUrl] : [],
 				problemType,
 				problemDescription,
+				selectedCaisseId: selectedCaisseId,
 			}),
 			title: {
 				type: "plain_text",
@@ -4639,7 +4719,12 @@ async function handlePaymentFormModeSelection(payload, context) {
 
 	const viewId = payload.view.id;
 	const privateMetadata = payload.view.private_metadata;
+	console.log("::== Private metadata:", privateMetadata);
 	const metadata = JSON.parse(privateMetadata);
+	console.log("::== Parsed metadata:", metadata);
+	// Extract selectedCaisseId from metadata
+	const selectedCaisseId = metadata.selectedCaisseId;
+	console.log("::== Selected caisse ID:", selectedCaisseId);
 
 	// Get current blocks and remove existing payment method specific fields
 	let blocks = payload.view.blocks.filter((block, index) => {
@@ -4656,10 +4741,12 @@ async function handlePaymentFormModeSelection(payload, context) {
 				"virement_order",
 				"mobilemoney_recipient_phone",
 				"mobilemoney_sender_phone",
+				"mobilemoney_fees",
 				"mobilemoney_date",
 				"julaya_recipient",
 				"julaya_date",
 				"julaya_transaction_number",
+				"accounting_required",
 			].includes(block.block_id) &&
 			!(block.type === "divider" && index > 4) &&
 			!(block.type === "section" && block.text?.text?.includes("Détails"))
@@ -4792,9 +4879,56 @@ async function handlePaymentFormModeSelection(payload, context) {
 			},
 			{
 				type: "input",
+				block_id: "mobilemoney_fees",
+				label: { type: "plain_text", text: "Frais" },
+				element: {
+					type: "number_input",
+					is_decimal_allowed: true,
+					min_value: "0",
+					action_id: "input_mobilemoney_fees",
+					placeholder: {
+						type: "plain_text",
+						text: "Montant des frais",
+					},
+				},
+			},
+			{
+				type: "input",
 				block_id: "mobilemoney_date",
 				label: { type: "plain_text", text: "Date" },
 				element: { type: "datepicker", action_id: "input_mobilemoney_date" },
+			},
+			{
+				type: "input",
+				block_id: "accounting_required",
+				label: { type: "plain_text", text: "Comptabilisation requise ?" },
+				element: {
+					type: "radio_buttons",
+					action_id: "input_accounting_required",
+					options: [
+						{
+							text: {
+								type: "plain_text",
+								text: "Oui - Générer un numéro de décaissement",
+							},
+							value: "yes",
+						},
+						{
+							text: {
+								type: "plain_text",
+								text: "Non - Numéro générique uniquement",
+							},
+							value: "no",
+						},
+					],
+					initial_option: {
+						text: {
+							type: "plain_text",
+							text: "Oui - Générer un numéro de décaissement",
+						},
+						value: "yes",
+					},
+				},
 			}
 		);
 	} else if (selectedValue === "Julaya") {
@@ -4831,6 +4965,50 @@ async function handlePaymentFormModeSelection(payload, context) {
 					is_decimal_allowed: true,
 					min_value: "0",
 					action_id: "input_julaya_transaction_number",
+				},
+			}
+		);
+	} else if (selectedValue === "Espèces") {
+		// NOUVEAU: Champ pour la comptabilisation (Espèces)
+		blocks.push(
+			{ type: "divider" },
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: "*Options de comptabilisation*",
+				},
+			},
+			{
+				type: "input",
+				block_id: "accounting_required",
+				label: { type: "plain_text", text: "Comptabilisation requise ?" },
+				element: {
+					type: "radio_buttons",
+					action_id: "input_accounting_required",
+					options: [
+						{
+							text: {
+								type: "plain_text",
+								text: "Oui - Générer un numéro de décaissement",
+							},
+							value: "yes",
+						},
+						{
+							text: {
+								type: "plain_text",
+								text: "Non - Numéro générique uniquement",
+							},
+							value: "no",
+						},
+					],
+					initial_option: {
+						text: {
+							type: "plain_text",
+							text: "Oui - Générer un numéro de décaissement",
+						},
+						value: "yes",
+					},
 				},
 			}
 		);
@@ -4883,15 +5061,914 @@ async function handleModifyPaymentModeSelection(payload, context) {
 	// Call handleModifyPayment with the selected mode to update the modal
 	return await handleModifyPayment(payload, context, selectedValue);
 }
+
+// First, let's add a function to get available caisses
+async function getAvailableCaisses() {
+	try {
+		const caisses = await Caisse.find({}, "type channelId");
+		return caisses;
+	} catch (error) {
+		console.error("Error fetching caisses:", error);
+		return [];
+	}
+}
+
+// Modified confirmation modal to include payment method selection ONLY for payment requests
+async function createPaymentConfirmationModal(
+	paymentId,
+	isAccept,
+	message_ts,
+	selectedPaymentMethod = null
+) {
+	const isPaymentRequest = paymentId.startsWith("PAY/");
+	const caisses = await getAvailableCaisses();
+
+	// Create options for caisse selection
+	const caisseOptions = caisses.map((caisse) => ({
+		text: {
+			type: "plain_text",
+			text: caisse.type,
+		},
+		value: caisse._id.toString(),
+	}));
+
+	const view = {
+		type: "modal",
+		callback_id: "payment_verif_confirm",
+		title: { type: "plain_text", text: "Confirmation de paiement" },
+		submit: { type: "plain_text", text: "Confirmer" },
+		close: { type: "plain_text", text: "Annuler" },
+		blocks: [
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: `Êtes-vous sûr de vouloir ${
+						isAccept ? "approuver" : "rejeter"
+					} cette demande ?`,
+				},
+			},
+			// Only show payment method selection for payment requests (PAY/), not orders (CMD/)
+			...(isAccept && isPaymentRequest
+				? [
+						{
+							type: "divider",
+						},
+						{
+							type: "section",
+							text: {
+								type: "mrkdwn",
+								text: "*Sélectionnez le mode de paiement :*",
+							},
+						},
+						{
+							type: "actions",
+							elements: [
+								{
+									type: "radio_buttons",
+									action_id: "payment_method_selection",
+									initial_option: selectedPaymentMethod
+										? {
+												text: {
+													type: "plain_text",
+													text:
+														selectedPaymentMethod === "caisse_transfer"
+															? "Transfert Caisse"
+															: "Autre méthode",
+												},
+												value: selectedPaymentMethod,
+										  }
+										: undefined,
+									options: [
+										{
+											text: {
+												type: "plain_text",
+												text: "Transfert Caisse",
+											},
+											value: "caisse_transfer",
+										},
+									],
+								},
+							],
+						},
+						// Only show caisse selection if "Transfert Caisse" is selected
+						...(selectedPaymentMethod === "caisse_transfer"
+							? [
+									{
+										type: "section",
+										text: {
+											type: "mrkdwn",
+											text: "*Sélectionnez le type de caisse :*",
+										},
+										accessory: {
+											type: "static_select",
+											placeholder: {
+												type: "plain_text",
+												text: "Choisir une caisse",
+											},
+											action_id: "caisse_selection",
+											options: caisseOptions,
+										},
+									},
+							  ]
+							: []),
+				  ]
+				: []),
+			{
+				type: "input",
+				block_id: "validation_data",
+				optional: true,
+				label: {
+					type: "plain_text",
+					text: "Commentaire ",
+					emoji: true,
+				},
+				element: {
+					type: "plain_text_input",
+					action_id: "comment",
+				},
+			},
+		],
+		private_metadata: JSON.stringify({
+			paymentId,
+			action: isAccept ? "accept" : "reject",
+			message_ts,
+			selectedPaymentMethod,
+		}),
+	};
+
+	return view;
+}
+
+// Add these handlers for transfer approval/rejection
+// async function handleApproveTransfer(payload, context) {
+//     console.log("** handleApproveTransfer");
+    
+//     try {
+//         const transferId = payload.actions[0].value;
+//         const userId = payload.user.id;
+//         const userName = payload.user.username;
+        
+//         // Find the caisse containing the transfer request
+//         const caisse = await Caisse.findOne({
+//             "transferRequests.transferId": transferId,
+//         });
+        
+//         if (!caisse) {
+//             console.error(`Caisse not found for transfer ${transferId}`);
+//             return createSlackResponse(200, {
+//                 text: "❌ Demande de transfert introuvable",
+//             });
+//         }
+
+//         // Find the specific transfer request
+//         const transferIndex = caisse.transferRequests.findIndex(
+//             (r) => r.transferId === transferId
+//         );
+        
+//         if (transferIndex === -1) {
+//             console.error(`Transfer ${transferId} not found`);
+//             return createSlackResponse(200, {
+//                 text: "❌ Demande de transfert introuvable",
+//             });
+//         }
+
+//         const transferRequest = caisse.transferRequests[transferIndex];
+        
+//         // Check if already processed
+//         if (transferRequest.status !== "En attente") {
+//             return createSlackResponse(200, {
+//                 text: `❌ Cette demande de transfert a déjà été ${transferRequest.status.toLowerCase()}`,
+//             });
+//         }
+
+//         // Get source and destination caisses
+//         const fromCaisse = await Caisse.findOne({ channelId: transferRequest.fromCaisse });
+//         const toCaisse = await Caisse.findOne({ channelId: transferRequest.toCaisse });
+
+//         if (!fromCaisse || !toCaisse) {
+//             return createSlackResponse(200, {
+//                 text: "❌ Caisse source ou destination introuvable",
+//             });
+//         }
+
+//         // Check if source caisse has sufficient balance
+//         const currentBalance = fromCaisse.balances[transferRequest.currency] || 0;
+//         if (currentBalance < transferRequest.amount) {
+//             return createSlackResponse(200, {
+//                 text: `❌ Solde insuffisant dans la caisse source. Solde actuel: ${currentBalance} ${transferRequest.currency}`,
+//             });
+//         }
+
+//         // Perform the transfer
+//         const transferUpdate = {
+//             $inc: {
+//                 [`balances.${transferRequest.currency}`]: -transferRequest.amount
+//             },
+//             $push: {
+//                 transactions: {
+//                     type: "transfer_out",
+//                     amount: -transferRequest.amount,
+//                     currency: transferRequest.currency,
+//                     transferId: transferId,
+//                     details: `Transfert sortant vers <#${transferRequest.toCaisse}> - ${transferRequest.motif}`,
+//                     timestamp: new Date(),
+//                     transferDetails: {
+//                         to: transferRequest.toCaisse,
+//                         motif: transferRequest.motif,
+//                         approvedBy: userName,
+//                     },
+//                 },
+//             },
+//         };
+
+//         const receiveUpdate = {
+//             $inc: {
+//                 [`balances.${transferRequest.currency}`]: transferRequest.amount
+//             },
+//             $push: {
+//                 transactions: {
+//                     type: "transfer_in",
+//                     amount: transferRequest.amount,
+//                     currency: transferRequest.currency,
+//                     transferId: transferId,
+//                     details: `Transfert entrant de <#${transferRequest.fromCaisse}> - ${transferRequest.motif}`,
+//                     timestamp: new Date(),
+//                     transferDetails: {
+//                         from: transferRequest.fromCaisse,
+//                         motif: transferRequest.motif,
+//                         approvedBy: userName,
+//                     },
+//                 },
+//             },
+//         };
+
+//         // Update both caisses
+//         await Promise.all([
+//             Caisse.findOneAndUpdate(
+//                 { channelId: transferRequest.fromCaisse },
+//                 transferUpdate,
+//                 { new: true }
+//             ),
+//             Caisse.findOneAndUpdate(
+//                 { channelId: transferRequest.toCaisse },
+//                 receiveUpdate,
+//                 { new: true }
+//             )
+//         ]);
+
+//         // Update transfer request status
+//         transferRequest.status = "Approuvé";
+//         transferRequest.approvedBy = userName;
+//         transferRequest.approvedAt = new Date();
+//         transferRequest.workflow.stage = "approved";
+//         transferRequest.workflow.history.push({
+//             stage: "approved",
+//             timestamp: new Date(),
+//             actor: userName,
+//             details: "Demande de transfert approuvée et exécutée",
+//         });
+
+//         // Save the updated caisse with transfer request
+//         await Caisse.findOneAndUpdate(
+//             { "transferRequests.transferId": transferId },
+//             { $set: { [`transferRequests.${transferIndex}`]: transferRequest } },
+//             { new: true }
+//         );
+
+//         // Get updated balances for notifications
+//         const updatedFromCaisse = await Caisse.findOne({ channelId: transferRequest.fromCaisse });
+//         const updatedToCaisse = await Caisse.findOne({ channelId: transferRequest.toCaisse });
+
+//         // Sync to Excel
+//         try {
+//             await syncCaisseToExcel(updatedFromCaisse, transferId);
+//             await syncCaisseToExcel(updatedToCaisse, transferId);
+//         } catch (error) {
+//             console.error(`Excel sync failed: ${error.message}`);
+//         }
+
+//         // Update the original message
+//         await postSlackMessageWithRetry(
+//             "https://slack.com/api/chat.update",
+//             {
+//                 channel: payload.channel.id,
+//                 ts: payload.message.ts,
+//                 blocks: [
+//                     {
+//                         type: "header",
+//                         text: {
+//                             type: "plain_text",
+//                             text: `✅ Transfert approuvé: ${transferRequest.transferId}`,
+//                             emoji: true,
+//                         },
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*ID:*\n${transferRequest.transferId}`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Montant:*\n${transferRequest.amount} ${transferRequest.currency}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*De:*\n<#${transferRequest.fromCaisse}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Vers:*\n<#${transferRequest.toCaisse}>`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Approuvé par:*\n<@${userName}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Date d'approbation:*\n${new Date().toLocaleString("fr-FR")}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "context",
+//                         elements: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `Nouveau solde source: ${updatedFromCaisse.balances[transferRequest.currency]} ${transferRequest.currency} | Nouveau solde destination: ${updatedToCaisse.balances[transferRequest.currency]} ${transferRequest.currency}`,
+//                             },
+//                         ],
+//                     },
+//                 ],
+//                 text: `Transfert ${transferId} approuvé par ${userName}`,
+//             },
+//             process.env.SLACK_BOT_TOKEN,
+//             context
+//         );
+
+//         // Notify the requester
+//         await postSlackMessageWithRetry(
+//             "https://slack.com/api/chat.postMessage",
+//             {
+//                 channel: transferRequest.submittedByID,
+//                 blocks: [
+//                     {
+//                         type: "header",
+//                         text: {
+//                             type: "plain_text",
+//                             text: "✅ Demande de transfert approuvée",
+//                             emoji: true,
+//                         },
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*ID:*\n${transferRequest.transferId}`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Montant:*\n${transferRequest.amount} ${transferRequest.currency}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*De:*\n<#${transferRequest.fromCaisse}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Vers:*\n<#${transferRequest.toCaisse}>`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         text: {
+//                             type: "mrkdwn",
+//                             text: `*Approuvé par:*\n<@${userName}> le ${new Date().toLocaleString("fr-FR")}`,
+//                         },
+//                     },
+//                     {
+//                         type: "context",
+//                         elements: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: "✅ Votre demande de transfert a été approuvée et exécutée avec succès.",
+//                             },
+//                         ],
+//                     },
+//                 ],
+//             },
+//             process.env.SLACK_BOT_TOKEN,
+//             context
+//         );
+
+//         // Notify both caisse channels
+//         const notifications = [
+//             {
+//                 channel: transferRequest.fromCaisse,
+//                 text: `📤 Transfert sortant exécuté: ${transferRequest.amount} ${transferRequest.currency} vers <#${transferRequest.toCaisse}>. Nouveau solde: ${updatedFromCaisse.balances[transferRequest.currency]} ${transferRequest.currency}`,
+//             },
+//             {
+//                 channel: transferRequest.toCaisse,
+//                 text: `📥 Transfert entrant reçu: ${transferRequest.amount} ${transferRequest.currency} de <#${transferRequest.fromCaisse}>. Nouveau solde: ${updatedToCaisse.balances[transferRequest.currency]} ${transferRequest.currency}`,
+//             },
+//         ];
+
+//         for (const notification of notifications) {
+//             await postSlackMessageWithRetry(
+//                 "https://slack.com/api/chat.postMessage",
+//                 {
+//                     channel: notification.channel,
+//                     text: notification.text,
+//                 },
+//                 process.env.SLACK_BOT_TOKEN,
+//                 context
+//             );
+//         }
+
+//         return createSlackResponse(200, {
+//             text: `✅ Transfert ${transferId} approuvé et exécuté avec succès`,
+//         });
+
+//     } catch (error) {
+//         console.error("Error approving transfer:", error.message);
+//         return createSlackResponse(200, {
+//             text: `❌ Erreur lors de l'approbation du transfert: ${error.message}`,
+//         });
+//     }
+// }
+
+// async function handleRejectTransfer(payload, context) {
+//     console.log("** handleRejectTransfer");
+    
+//     try {
+//         const transferId = payload.actions[0].value;
+//         const userId = payload.user.id;
+//         const userName = payload.user.username;
+        
+//         // Find the caisse containing the transfer request
+//         const caisse = await Caisse.findOne({
+//             "transferRequests.transferId": transferId,
+//         });
+        
+//         if (!caisse) {
+//             console.error(`Caisse not found for transfer ${transferId}`);
+//             return createSlackResponse(200, {
+//                 text: "❌ Demande de transfert introuvable",
+//             });
+//         }
+
+//         // Find the specific transfer request
+//         const transferIndex = caisse.transferRequests.findIndex(
+//             (r) => r.transferId === transferId
+//         );
+        
+//         if (transferIndex === -1) {
+//             console.error(`Transfer ${transferId} not found`);
+//             return createSlackResponse(200, {
+//                 text: "❌ Demande de transfert introuvable",
+//             });
+//         }
+
+//         const transferRequest = caisse.transferRequests[transferIndex];
+        
+//         // Check if already processed
+//         if (transferRequest.status !== "En attente") {
+//             return createSlackResponse(200, {
+//                 text: `❌ Cette demande de transfert a déjà été ${transferRequest.status.toLowerCase()}`,
+//             });
+//         }
+
+//         // Update transfer request status
+//         transferRequest.status = "Rejeté";
+//         transferRequest.rejectedBy = userName;
+//         transferRequest.rejectedAt = new Date();
+//         transferRequest.workflow.stage = "rejected";
+//         transferRequest.workflow.history.push({
+//             stage: "rejected",
+//             timestamp: new Date(),
+//             actor: userName,
+//             details: "Demande de transfert rejetée",
+//         });
+
+//         // Save the updated caisse with transfer request
+//         await Caisse.findOneAndUpdate(
+//             { "transferRequests.transferId": transferId },
+//             { $set: { [`transferRequests.${transferIndex}`]: transferRequest } },
+//             { new: true }
+//         );
+
+//         // Update the original message
+//         await postSlackMessageWithRetry(
+//             "https://slack.com/api/chat.update",
+//             {
+//                 channel: payload.channel.id,
+//                 ts: payload.message.ts,
+//                 blocks: [
+//                     {
+//                         type: "header",
+//                         text: {
+//                             type: "plain_text",
+//                             text: `❌ Transfert rejeté: ${transferRequest.transferId}`,
+//                             emoji: true,
+//                         },
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*ID:*\n${transferRequest.transferId}`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Montant:*\n${transferRequest.amount} ${transferRequest.currency}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*De:*\n<#${transferRequest.fromCaisse}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Vers:*\n<#${transferRequest.toCaisse}>`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Rejeté par:*\n<@${userName}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Date de rejet:*\n${new Date().toLocaleString("fr-FR")}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "context",
+//                         elements: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: "❌ Cette demande de transfert a été rejetée",
+//                             },
+//                         ],
+//                     },
+//                 ],
+//                 text: `Transfert ${transferId} rejeté par ${userName}`,
+//             },
+//             process.env.SLACK_BOT_TOKEN,
+//             context
+//         );
+
+//         // Notify the requester
+//         await postSlackMessageWithRetry(
+//             "https://slack.com/api/chat.postMessage",
+//             {
+//                 channel: transferRequest.submittedByID,
+//                 blocks: [
+//                     {
+//                         type: "header",
+//                         text: {
+//                             type: "plain_text",
+//                             text: "❌ Demande de transfert rejetée",
+//                             emoji: true,
+//                         },
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*ID:*\n${transferRequest.transferId}`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Montant:*\n${transferRequest.amount} ${transferRequest.currency}`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         fields: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*De:*\n<#${transferRequest.fromCaisse}>`,
+//                             },
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: `*Vers:*\n<#${transferRequest.toCaisse}>`,
+//                             },
+//                         ],
+//                     },
+//                     {
+//                         type: "section",
+//                         text: {
+//                             type: "mrkdwn",
+//                             text: `*Rejeté par:*\n<@${userName}> le ${new Date().toLocaleString("fr-FR")}`,
+//                         },
+//                     },
+//                     {
+//                         type: "context",
+//                         elements: [
+//                             {
+//                                 type: "mrkdwn",
+//                                 text: "❌ Votre demande de transfert a été rejetée.",
+//                             },
+//                         ],
+//                     },
+//                 ],
+//             },
+//             process.env.SLACK_BOT_TOKEN,
+//             context
+//         );
+
+//         return createSlackResponse(200, {
+//             text: `❌ Transfert ${transferId} rejeté`,
+//         });
+
+//     } catch (error) {
+//         console.error("Error rejecting transfer:", error.message);
+//         return createSlackResponse(200, {
+//             text: `❌ Erreur lors du rejet du transfert: ${error.message}`,
+//         });
+//     }
+// }
+// ...existing code...
+
+// Add these new functions before handleApproveTransfer and handleRejectTransfer
+
+// Function to open approval confirmation modal
+async function openTransferApprovalConfirmation(payload, context) {
+    console.log("** openTransferApprovalConfirmation");
+    
+    try {
+        const transferId = payload.actions[0].value;
+        
+        // Find the caisse containing the transfer request to show details
+        const caisse = await Caisse.findOne({
+            "transferRequests.transferId": transferId,
+        });
+        
+        if (!caisse) {
+            console.error(`Caisse not found for transfer ${transferId}`);
+            return createSlackResponse(200, {
+                text: "❌ Demande de transfert introuvable",
+            });
+        }
+
+        const transferRequest = caisse.transferRequests.find(
+            (r) => r.transferId === transferId
+        );
+        
+        if (!transferRequest) {
+            console.error(`Transfer ${transferId} not found`);
+            return createSlackResponse(200, {
+                text: "❌ Demande de transfert introuvable",
+            });
+        }
+
+        // Get caisse details for display
+        const fromCaisse = await Caisse.findOne({ channelId: transferRequest.fromCaisse });
+        const toCaisse = await Caisse.findOne({ channelId: transferRequest.toCaisse });
+
+        const view = {
+            type: "modal",
+            callback_id: "transfer_approval_confirmation",
+            title: {
+                type: "plain_text",
+                text: "Confirmer l'approbation",
+                emoji: true,
+            },
+            submit: {
+                type: "plain_text",
+                text: "Approuver",
+                emoji: true,
+            },
+            close: {
+                type: "plain_text",
+                text: "Annuler",
+                emoji: true,
+            },
+            blocks: [
+                {
+                    type: "section",
+                    text: {
+                        type: "mrkdwn",
+                        text: `⚠️ *Êtes-vous sûr de vouloir approuver ce transfert ?*`,
+                    },
+                },
+                
+                {
+                    type: "context",
+                    elements: [
+                        {
+                            type: "mrkdwn",
+                            text: `Solde source actuel: ${fromCaisse?.balances[transferRequest.currency] || 0} ${transferRequest.currency}`,
+                        },
+                    ],
+                },
+                {
+                    type: "input",
+                    block_id: "approval_comment_block",
+                    optional: true,
+                    label: {
+                        type: "plain_text",
+                        text: "Commentaire",
+                        emoji: true,
+                    },
+                    element: {
+                        type: "plain_text_input",
+                        action_id: "approval_comment_input",
+                        multiline: true,
+                        placeholder: {
+                            type: "plain_text",
+                            text: "Ajouter un commentaire pour cette approbation...",
+                        },
+                    },
+                },
+            ],
+            private_metadata: JSON.stringify({
+                transferId: transferId,
+                channelId: payload.channel.id,
+                messageTs: payload.message.ts,
+            }),
+        };
+
+        const response = await postSlackMessage2(
+            "https://slack.com/api/views.open",
+            { trigger_id: payload.trigger_id, view },
+            process.env.SLACK_BOT_TOKEN
+        );
+
+        if (!response.data.ok) {
+            throw new Error(`Slack API error: ${response.data.error}`);
+        }
+
+        return createSlackResponse(200, "");
+
+    } catch (error) {
+        console.error("Error opening transfer approval confirmation:", error.message);
+        return createSlackResponse(200, {
+            text: `❌ Erreur lors de l'ouverture de la confirmation: ${error.message}`,
+        });
+    }
+}
+
+// Function to open rejection reason modal
+async function openTransferRejectionReason(payload, context) {
+    console.log("** openTransferRejectionReason");
+    
+    try {
+        const transferId = payload.actions[0].value;
+        
+        // Find the caisse containing the transfer request to show details
+        const caisse = await Caisse.findOne({
+            "transferRequests.transferId": transferId,
+        });
+        
+        if (!caisse) {
+            console.error(`Caisse not found for transfer ${transferId}`);
+            return createSlackResponse(200, {
+                text: "❌ Demande de transfert introuvable",
+            });
+        }
+
+        const transferRequest = caisse.transferRequests.find(
+            (r) => r.transferId === transferId
+        );
+        
+        if (!transferRequest) {
+            console.error(`Transfer ${transferId} not found`);
+            return createSlackResponse(200, {
+                text: "❌ Demande de transfert introuvable",
+            });
+        }
+
+        const view = {
+            type: "modal",
+            callback_id: "transfer_rejection_reason",
+            title: {
+                type: "plain_text",
+                text: "Motif de rejet",
+                emoji: true,
+            },
+            submit: {
+                type: "plain_text",
+                text: "Rejeter",
+                emoji: true,
+            },
+            close: {
+                type: "plain_text",
+                text: "Annuler",
+                emoji: true,
+            },
+            blocks: [
+                {
+                    type: "section",
+                    text: {
+                        type: "mrkdwn",
+                        text: `⚠️ *Êtes-vous sûr de vouloir rejeter ce transfert ?*`,
+                    },
+                },
+                {
+                    type: "divider",
+                },
+                
+                {
+                    type: "input",
+                    block_id: "rejection_reason_block",
+                    label: {
+                        type: "plain_text",
+                        text: "Motif du rejet",
+                        emoji: true,
+                    },
+                    element: {
+                        type: "plain_text_input",
+                        action_id: "rejection_reason_input",
+                        multiline: true,
+                        placeholder: {
+                            type: "plain_text",
+                            text: "Expliquez pourquoi ce transfert est rejeté...",
+                        },
+                    },
+                },
+            ],
+            private_metadata: JSON.stringify({
+                transferId: transferId,
+                channelId: payload.channel.id,
+                messageTs: payload.message.ts,
+            }),
+        };
+
+        const response = await postSlackMessage2(
+            "https://slack.com/api/views.open",
+            { trigger_id: payload.trigger_id, view },
+            process.env.SLACK_BOT_TOKEN
+        );
+
+        if (!response.data.ok) {
+            throw new Error(`Slack API error: ${response.data.error}`);
+        }
+
+        return createSlackResponse(200, "");
+
+    } catch (error) {
+        console.error("Error opening transfer rejection reason:", error.message);
+        return createSlackResponse(200, {
+            text: `❌ Erreur lors de l'ouverture du formulaire de rejet: ${error.message}`,
+        });
+    }
+}
+
+
+
+
 async function handleBlockActions(payload, context) {
-	console.log("** handleBlockActions");
+	console.log("*------------------------------ handleBlockActions");
 	const action = payload.actions[0];
 	const actionId = action.action_id;
 	const userName = payload.user.username;
 	console.log("** payloadType", payload.type);
-	console.log("** action", payload.actions[0]);
-	console.log("** action.value", action.value);
-	console.log("** actionId", payload.actions[0].action_id);
+	console.log("*------------------------------ action", payload.actions[0]);
+	console.log("*------------------------------ action.value", action.value);
+	console.log("*------------------------------ actionId", payload.actions[0].action_id);
+	 if (actionId === "approve_transfer") {
+        console.log("** approve_transfer");
+        // Open confirmation modal instead of directly approving
+        return await openTransferApprovalConfirmation(payload, context);
+    }
+    
+    if (actionId === "reject_transfer") {
+        console.log("** reject_transfer");
+        // Open rejection reason modal instead of directly rejecting
+        return await openTransferRejectionReason(payload, context);
+    }
 	if (actionId === "edit_order") {
 		console.log("** edit_order");
 		try {
@@ -5079,14 +6156,16 @@ async function handleBlockActions(payload, context) {
 			console.log("Processing fill_funding_details");
 			console.log(`Message TS: ${messageTs}, Channel ID: ${channelId}`);
 
-			const requestId = action.value; // e.g., FUND/2025/04/0070
+			// const requestId = action.value; // e.g., FUND/2025/04/0070
+			const { requestId, caisseType } = JSON.parse(payload.actions[0].value);
 
 			await generateFundingApprovalPaymentModal(
 				context,
 				payload.trigger_id,
 				messageTs,
 				requestId,
-				channelId
+				channelId,
+				caisseType
 			);
 			return createSlackResponse(200, "");
 		});
@@ -5160,6 +6239,7 @@ async function handleBlockActions(payload, context) {
 
 			return context.res;
 		} else if (action.name === "finance_payment_form") {
+			console.log("**2 finance_payment_form");
 			context.res = {
 				status: 200,
 				body: "", // Empty response acknowledges receipt
@@ -5170,7 +6250,8 @@ async function handleBlockActions(payload, context) {
 				try {
 					console.log("aaaa ");
 					const view = generatePaymentRequestForm({});
-
+					console.log("view", view);
+					console.log(".private_metadata", view.private_metadata);
 					if (payload.channel && payload.channel.id) {
 						view.private_metadata = JSON.stringify({
 							channelId: payload.channel.id,
@@ -5368,6 +6449,16 @@ async function handleBlockActions(payload, context) {
 			return await view_order(payload, action, context);
 		}
 		switch (actionId) {
+			case "caisse_selection":
+				console.log("** caisse_selection");
+				return createSlackResponse(200, "");
+
+			case "payment_method_selection":
+				console.log("** payment_method_selection");
+				await handlePaymentMethodSelection1(payload);
+
+				return createSlackResponse(200, "");
+				break;
 			case "correct_funding_details":
 				console.log("** correct_funding_details");
 				const value = JSON.parse(payload.actions[0].value);
@@ -5479,7 +6570,7 @@ async function handleBlockActions(payload, context) {
 						if (!order) {
 							return createSlackResponse(200, {
 								response_type: "ephemeral",
-								text: "Order not found.",
+								text: "Payment request not found.",
 							});
 						}
 
@@ -5497,30 +6588,12 @@ async function handleBlockActions(payload, context) {
 							return { response_action: "clear" };
 						}
 					}
-					// Open confirmation modal
-					const view = {
-						type: "modal",
-						callback_id: "payment_verif_confirm",
-						title: { type: "plain_text", text: "Confirmation" },
-						submit: { type: "plain_text", text: "Confirmer" },
-						close: { type: "plain_text", text: "Annuler" },
-						blocks: [
-							{
-								type: "section",
-								text: {
-									type: "mrkdwn",
-									text: `Êtes-vous sûr de vouloir ${
-										isAccept ? "approuver" : "rejeter"
-									} cette demande ?`,
-								},
-							},
-						],
-						private_metadata: JSON.stringify({
-							paymentId,
-							action: isAccept ? "accept" : "reject",
-							message_ts: payload.message.ts,
-						}),
-					};
+					// Create enhanced confirmation modal with caisse selection
+					const view = await createPaymentConfirmationModal(
+						paymentId,
+						isAccept,
+						payload.message.ts
+					);
 
 					await postSlackMessage2(
 						"https://slack.com/api/views.open",
@@ -5533,9 +6606,11 @@ async function handleBlockActions(payload, context) {
 					return createSlackResponse(500, "❌ Erreur de confirmation");
 				}
 			case "reject_fund":
-				fundId = action.value;
-				console.log("Rejecting FUND", fundId);
-				return openRejectionReasonModalFund(payload, fundId);
+				// fundId = action.value;
+				// console.log("Rejecting FUND", fundId);
+				const { fundId, caisseType } = JSON.parse(payload.actions[0].value);
+				console.log("Rejecting FUND", fundId, caisseType);
+				return openRejectionReasonModalFund(payload, fundId, caisseType);
 
 			case "accept_order":
 			case "reject_order":
@@ -5603,7 +6678,41 @@ async function handleBlockActions(payload, context) {
 				return createSlackResponse(200, "");
 
 			case "finance_payment_form":
-				const entityId = action.value;
+				console.log("** finance_payment_form");
+				let entityId, selectedCaisseId;
+				const caisseId = await Caisse.findOne(
+					{ type: "principale" },
+					"_id"
+				).then((caisse) => caisse?._id?.toString() || null); // Add .toString()
+				console.log("Caisse ID:", caisseId);
+				try {
+					// Check if the value is a JSON string or a plain order ID
+					if (
+						action.value &&
+						typeof action.value === "string" &&
+						action.value.startsWith("{")
+					) {
+						// If it's a JSON string, parse it to get both values
+						const parsedValue = JSON.parse(action.value);
+						entityId = parsedValue.entityId;
+						selectedCaisseId = parsedValue.selectedCaisseId;
+					} else {
+						// If it's a plain string (order ID), use it directly
+						entityId = action.value;
+						selectedCaisseId = caisseId; // No caisse selection in this case
+					}
+				} catch (parseError) {
+					console.log(
+						"Failed to parse action.value as JSON, using as plain entityId:",
+						action.value
+					);
+					entityId = action.value;
+					selectedCaisseId = null;
+				}
+				console.log("action.value:", action.value);
+				console.log("entityId:", entityId);
+				console.log("selectedCaisseId:", selectedCaisseId);
+
 				console.log("entityId2222", entityId);
 				// Fetch the entity
 				const entity = await fetchEntity(entityId, context);
@@ -5674,6 +6783,7 @@ async function handleBlockActions(payload, context) {
 					context,
 					selectedPaymentMode: null,
 					orderId: action.value,
+					selectedCaisseId,
 				});
 				return await generatePaymentForm({
 					payload,
@@ -5699,6 +6809,7 @@ async function handleBlockActions(payload, context) {
 			case "select_payment_mode":
 				// Check if this is from the payment form modal
 				if (payload.view?.callback_id === "payment_form_submission") {
+					console.log("** select_payment_mode");
 					console.log("Handling payment mode selection for payment form");
 					await handlePaymentFormModeSelection(payload, context);
 					return createSlackResponse(200, "");
@@ -5708,7 +6819,7 @@ async function handleBlockActions(payload, context) {
 					payload.view?.callback_id === "payment_modification_submission"
 				) {
 					console.log(
-						"Handling payment mode selection for payment modification"
+						"===/ Handling payment mode selection for payment modification"
 					);
 					await handleModifyPaymentModeSelection(payload, context);
 					return createSlackResponse(200, "");
@@ -5767,7 +6878,7 @@ async function handleBlockActions(payload, context) {
 					return await handleReportProblem(payload, context);
 				});
 			case "modify_payment":
-				console.log("22222");
+				console.log("===$ modify_payment");
 				return await handleModifyPayment(payload, context);
 			case "edit_proforma":
 				return await handleEditProforma(payload, context);
@@ -6090,6 +7201,21 @@ function createMobileMoneyBlocks(details) {
 		},
 		{
 			type: "input",
+			block_id: "mobilemoney_fees",
+			label: { type: "plain_text", text: "Frais" },
+			element: {
+				type: "number_input",
+				is_decimal_allowed: true,
+				min_value: "0",
+				action_id: "input_mobilemoney_fees",
+				placeholder: {
+					type: "plain_text",
+					text: "Montant des frais",
+				},
+			},
+		},
+		{
+			type: "input",
 			block_id: "mobilemoney_date",
 			label: {
 				type: "plain_text",
@@ -6322,7 +7448,7 @@ async function view_order(payload, action, context) {
 }
 
 function createSlackResponse1(statusCode, content) {
-	console.log("** createSlackResponse1");
+	// console.log("** createSlackResponse1");
 	return {
 		statusCode: statusCode,
 		headers: { "Content-Type": "application/json" },
@@ -6331,7 +7457,7 @@ function createSlackResponse1(statusCode, content) {
 }
 
 function createSlackResponse1(statusCode, content) {
-	console.log("** createSlackResponse1");
+	// console.log("** createSlackResponse1");
 	return {
 		statusCode: statusCode,
 		headers: { "Content-Type": "application/json" },
@@ -6547,7 +7673,7 @@ async function validateProforma(payload, context) {
 		console.log("Notifying admin about proforma submission... 1");
 
 		// Notify both admin and achat channels with updated message
-		await notifyAdminProforma(context,order, "", proformaIndex);
+		await notifyAdminProforma(context, order, "", proformaIndex);
 
 		// // Post a confirmation message to the thread
 		// const slackResponse = await postSlackMessage(
@@ -6616,7 +7742,7 @@ async function validateProforma(payload, context) {
 		// Query the Order collection with a proper filter object
 		const order2 = await Order.findOne({ id_commande: orderId1 });
 		console.log("order111", order2);
-		return await notifyTeams(payload, order2, context);
+		return await notifyTeams(payload, comment, order2, context);
 		// Continue execution even if finance notification fails
 
 		return createSlackResponse(200, {
@@ -6701,7 +7827,7 @@ async function handleProformaSubmission(payload, context) {
 		try {
 			console.log("Notifying admin about proforma submission...");
 			// Notify admin
-			await notifyAdminProforma(context,updatedOrder, msgts);
+			await notifyAdminProforma(context, updatedOrder, msgts);
 		} catch (notifyError) {
 			context.log(`WARNING: Admin notification failed: ${notifyError.message}`);
 			// Continue execution even if admin notification fails

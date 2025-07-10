@@ -381,11 +381,7 @@ async function checkFormErrors(formData, orderHistory, context) {
 				`designation_${index + 1}`
 			] = `Veuillez fournir une description précise et détaillée`;
 		}
-		if (article.quantity > 500 && !hasProforma) {
-			errors.push(
-				`Une proforma est requise pour l'article ${index + 1} (quantité > 500)`
-			);
-		}
+		
 	});
 
 	// Total quantity check

@@ -32,33 +32,121 @@ const {
 } = require("./orderStatusService");
 let payload;
 
-async function notifyFinancePayment(paymentRequest, context, validatedBy) {
+// async function notifyFinancePayment(paymentRequest, context, validatedBy) {
+// 	console.log("** notifyFinancePayment");
+// 	try {
+// 		context.log(
+// 			`Sending payment notification to finance channel: ${process.env.SLACK_FINANCE_CHANNEL_ID}`
+// 		);
+// 		const response = await postSlackMessage(
+// 			"https://slack.com/api/chat.postMessage",
+// 			{
+// 				channel: process.env.SLACK_FINANCE_CHANNEL_ID,
+// 				text: `💰 Demande de paiement *${paymentRequest.id_paiement}* validée par admin`,
+// 				blocks: getFinancePaymentBlocks(paymentRequest, validatedBy),
+// 			},
+// 			process.env.SLACK_BOT_TOKEN
+// 		);
+
+// 		context.log(`notifyFinancePayment response: ${JSON.stringify(response)}`);
+// 		if (!response.ok) {
+// 			throw new Error(`Slack API error: ${response.error}`);
+// 		}
+// 		return response; // Optional, if you need the response elsewhere
+// 	} catch (error) {
+// 		context.log(`❌ notifyFinancePayment failed: ${error.message}`);
+// 		throw error; // Rethrow to handle in caller if needed
+// 	}
+// }
+// Updated notifyFinancePayment function
+async function notifyFinancePayment(
+	paymentRequest,
+	context,
+	validatedBy,
+	selectedCaisseId = null,
+	selectedPaymentMethod = null
+) {
 	console.log("** notifyFinancePayment");
+	console.log("== selectedPaymentMethod", selectedPaymentMethod);
+	console.log("== selectedCaisseId", selectedCaisseId);
 	try {
-		context.log(
-			`Sending payment notification to finance channel: ${process.env.SLACK_FINANCE_CHANNEL_ID}`
+		let targetChannelId = process.env.SLACK_FINANCE_CHANNEL_ID; // default fallback
+
+		const caisseId = await Caisse.findOne({ type: "principale" }, "_id").then(
+			(caisse) => caisse?._id || null
 		);
+		console.log("Caisse ID:", caisseId);
+		// Determine which channel to send to based on caisse selection
+		if (selectedPaymentMethod === "caisse_transfer" && selectedCaisseId) {
+			console.log(`Using selected caisse ID: ${selectedCaisseId}`);
+			// Admin selected "Transfert Caisse" and chose a specific caisse
+			const selectedCaisse = await Caisse.findById(selectedCaisseId);
+			console.log(`Selected caisse: ${JSON.stringify(selectedCaisse)}`);
+			if (selectedCaisse && selectedCaisse.channelId) {
+				console.log(`Selected caisse channel ID: ${selectedCaisse.channelId}`);
+				console.log(`Selected caisse type: ${selectedCaisse}`);
+				targetChannelId = selectedCaisse.channelId;
+				context.log(
+					`Using selected caisse channel: ${targetChannelId} for caisse type: ${selectedCaisse.type}`
+				);
+			} else {
+				context.log(
+					`⚠️ Selected caisse not found or no channelId, using default finance channel`
+				);
+			}
+		} else {
+			// Admin didn't select "Transfert Caisse" or no caisse selected
+			// Find the "principal" caisse
+			const principalCaisse = await Caisse.findOne({ type: "principal" });
+			if (principalCaisse && principalCaisse.channelId) {
+				targetChannelId = principalCaisse.channelId;
+				context.log(`Using principal caisse channel: ${targetChannelId}`);
+			} else {
+				context.log(
+					`⚠️ Principal caisse not found, using default finance channel`
+				);
+			}
+		}
+
+		context.log(
+			`Sending payment notification to finance channel: ${targetChannelId}`
+		);
+		const finalCaisseId = selectedCaisseId || caisseId;
+		console.log("Final Caisse ID:", finalCaisseId);
 		const response = await postSlackMessage(
 			"https://slack.com/api/chat.postMessage",
 			{
-				channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-				text: `💰 Demande de paiement *${paymentRequest.id_paiement}* validée par admin`,
-				blocks: getFinancePaymentBlocks(paymentRequest, validatedBy),
+				channel: targetChannelId,
+				text: `💰 Demande de paiement ${paymentRequest.id_paiement} validée par admin`,
+				blocks: getFinancePaymentBlocks(
+					paymentRequest,
+					validatedBy,
+					finalCaisseId
+				),
+				metadata: {
+					selectedCaisseId: finalCaisseId, // Include selectedCaisseId in metadata
+				},
 			},
 			process.env.SLACK_BOT_TOKEN
 		);
 
 		context.log(`notifyFinancePayment response: ${JSON.stringify(response)}`);
+
 		if (!response.ok) {
 			throw new Error(`Slack API error: ${response.error}`);
 		}
-		return response; // Optional, if you need the response elsewhere
+
+		return response;
 	} catch (error) {
 		context.log(`❌ notifyFinancePayment failed: ${error.message}`);
-		throw error; // Rethrow to handle in caller if needed
+		throw error;
 	}
 }
-const getFinancePaymentBlocks = (paymentRequest, validatedBy) => [
+const getFinancePaymentBlocks = (
+	paymentRequest,
+	validatedBy,
+	selectedCaisseId
+) => [
 	// Titre and validated by in the same section
 
 	...getPaymentRequestBlocks(paymentRequest, validatedBy),
@@ -75,7 +163,13 @@ const getFinancePaymentBlocks = (paymentRequest, validatedBy) => [
 				},
 				style: "primary",
 				action_id: "finance_payment_form",
-				value: paymentRequest.id_paiement,
+				value: JSON.stringify({
+					entityId: paymentRequest.id_paiement,
+					selectedCaisseId: selectedCaisseId,
+				}),
+				// const { entityId, selectedCaisseId } = JSON.parse(action.value); // Extract both values
+				// console.log("id_paiement:", id_paiement);
+				// console.log("selectedCaisseId:", selectedCaisseId);
 			},
 		],
 	},
@@ -209,7 +303,7 @@ async function handleSlackInteractions(request, context) {
 	console.log("** handleSlackInteractions");
 	context.log("🔄 Interaction Slack reçue !");
 	context.log("handleSlackInteractions function");
-console.log("request", request);
+	console.log("request", request);
 	try {
 		const body = await request.text();
 		if (!verifySlackSignature(request, body)) {
@@ -227,10 +321,11 @@ console.log("request", request);
 				// Add a new case for handling the confirmation dialog submission
 				if (payload.view.callback_id === "pre_approval_confirmation_submit") {
 					console.log("**2 pre_approval_confirmation_submit");
-					const processingMessage = await postSlackMessage(
-						"https://slack.com/api/chat.postMessage",
+					await postSlackMessage(
+						"https://slack.com/api/chat.postEphemeral",
 						{
 							channel: process.env.SLACK_ADMIN_ID,
+							user: payload.user.id, // Specify the user ID to make the message ephemeral
 							text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
 						},
 						process.env.SLACK_BOT_TOKEN
@@ -265,14 +360,19 @@ console.log("request", request);
 						// Parse the private metadata to get request info
 						const metadata = JSON.parse(payload.view.private_metadata);
 						const requestId = metadata.requestId;
+						const caisseType = metadata.caisseType; // Get caisseType from metadata
+						console.log("caisseType PP", caisseType);
+						console.log("requestId PP", requestId);
 						const messageTs = metadata.messageTs;
 						const channelId = metadata.channelId;
 						const userId = payload.user.username;
 
 						// Find the funding request
 						const caisse = await Caisse.findOne({
-							"fundingRequests.requestId": requestId,
+							type: caisseType, // Match by caisseType
+							"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 						});
+						console.log("caisse PP", caisse);
 						if (!caisse) {
 							console.error(`Caisse not found for request ${requestId}`);
 							return createSlackResponse(200, "Demande introuvable");
@@ -453,14 +553,33 @@ console.log("request", request);
 					return context.res;
 				}
 				if (payload.view.callback_id === "payment_verif_confirm") {
-					const { paymentId, action, message_ts } = JSON.parse(
-						payload.view.private_metadata
-					);
+					const { paymentId, action, message_ts, selectedPaymentMethod } =
+						JSON.parse(payload.view.private_metadata);
 					const { orderId, channel_id } = JSON.parse(
 						payload.view.private_metadata
 					);
-					console.log("payload", payload);
 
+					const comment =
+						payload.view.state.values.validation_data?.comment?.value || "";
+
+					console.log("payload", payload);
+					// Get selected caisse from the form submission
+					let selectedCaisseId = null;
+					if (payload.view.state && payload.view.state.values) {
+						// Look for caisse selection in the form state
+						for (const blockId in payload.view.state.values) {
+							const block = payload.view.state.values[blockId];
+							if (
+								block.caisse_selection &&
+								block.caisse_selection.selected_option
+							) {
+								selectedCaisseId = block.caisse_selection.selected_option.value;
+								break;
+							}
+						}
+					}
+					console.log("selectedCaisseId", selectedCaisseId);
+					console.log("selectedPaymentMethod", selectedPaymentMethod);
 					let order;
 					let status;
 					if (paymentId.startsWith("CMD/")) {
@@ -491,6 +610,17 @@ console.log("request", request);
 											emoji: true,
 										},
 									},
+									...(comment
+										? [
+												{
+													type: "section",
+													text: {
+														type: "mrkdwn",
+														text: `💬 *Commentaire:*\n> ${comment}`,
+													},
+												},
+										  ]
+										: []),
 								],
 							},
 							process.env.SLACK_BOT_TOKEN
@@ -564,6 +694,7 @@ console.log("request", request);
 
 					// In view_submission handler for payment_verif_confirm
 					if (action === "accept") {
+						console.log("** accept payment_verif_confirm");
 						// await postSlackMessage(
 						//   "https://slack.com/api/chat.postMessage",
 						//   {
@@ -604,7 +735,12 @@ console.log("request", request);
 										},
 										{ new: true }
 									);
-									return await handleOrderStatus(payload, action, context);
+									return await handleOrderStatus(
+										payload,
+										comment,
+										action,
+										context
+									);
 									// Add validation before using paymentRequest
 									if (!paymentRequest) {
 										context.log(`❌ order request not found: ${paymentId}`);
@@ -656,7 +792,10 @@ console.log("request", request);
 									await notifyFinancePayment(
 										paymentRequest,
 										context,
-										payload.user.id
+										payload.user.id,
+										selectedCaisseId,
+										selectedPaymentMethod,
+										comment
 									);
 								}
 							} catch (error) {

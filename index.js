@@ -2,8 +2,7 @@
 const { app } = require("@azure/functions");
 const { handleOrderSlackApi, handleAICommand } = require("./orderHandlers.js");
 const { handleSlackInteractions } = require("./interactionHandlers.js");
-const { setupDelayMonitoring } = require("./handledelay");
-const { setupReporting } = require("./reportService");
+
 const {
 	checkPendingOrderDelays,
 	checkPaymentDelays,
@@ -14,6 +13,7 @@ const { Order } = require("./db");
 const { notifyUserAI } = require("./notificationService");
 const { createSlackResponse } = require("./utils");
 const { OpenAI } = require("openai");
+const { setupPaymentRequestDelayMonitoring } = require("./handledelayPayment.js");
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
 });
@@ -24,24 +24,11 @@ app.http("orderSlackApi", {
 	authLevel: "anonymous",
 	handler: async (request, context) => {
 		try {
-			console.log("** VERSION 1.99 **");
+			console.log("** VERSION 2.1 **");
 			// setupDelayMonitoring();
 			// setupReporting(context);
 			console.log("⚡ Order Management System is running!");
-			console.log(`
-📋 Available commands:
-  /order help                    - Show help
-  /order config                  - Open configuration panel (admin only)
-  /order list                    - List all configurations (admin only)
-  /order add [type] [value]      - Add configuration option (admin only)
-  /order remove [type] [value]   - Remove configuration option (admin only)
-  /order addrole @user [role]    - Add role to user (admin only)
-  /order removerole @user [role] - Remove role from user (admin only)
-  /order new                     - Create new order
-    `);
-
-			console.log("Delay monitoring scheduled to run every hour.");
-
+			
 			return await handleOrderSlackApi(request, context);
 		} catch (error) {
 			context.log(`❌ Erreur interne : ${error}`);
@@ -77,6 +64,7 @@ if (process.env.NODE_ENV === "production") {
 			await checkPendingOrderDelays(context);
 			await checkPaymentDelays(context);
 			await checkProformaDelays(context);
+			await setupPaymentRequestDelayMonitoring(context);
 			context.log("Running delay monitoringéééé");
 
 			context.log("Delay monitoring completed");

@@ -92,7 +92,7 @@ async function generateFundingRequestForm(context, trigger_id, params) {
 						action_id: "input_caisse_type",
 						options: caisseOptions,
 					},
-					label: { type: "plain_text", text: "Type de Caisse" },
+					label: { type: "plain_text", text: "Caisse à approvisionner" },
 				},
 				{
 					type: "input",
@@ -613,14 +613,14 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 							type: "button",
 							text: { type: "plain_text", text: "Pré-approuver", emoji: true },
 							style: "primary",
-							value: requestId,
+							value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
 							action_id: "pre_approve_funding", // New action for initial approval
 						},
 						{
 							type: "button",
 							text: { type: "plain_text", text: "Rejeter", emoji: true },
 							style: "danger",
-							value: requestId,
+							value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
 							action_id: "reject_fund",
 						},
 					],
@@ -672,6 +672,8 @@ async function handlePreApproval(payload, context) {
 
 	const requestId = metadata.requestId;
 	console.log("requestId", requestId);
+	const caisseType = metadata.caisseType;
+	console.log("caisseType", caisseType);
 	const messageTs = metadata.messageTs;
 	console.log("messageTs", messageTs);
 	const channelId = metadata.channelId;
@@ -679,8 +681,12 @@ async function handlePreApproval(payload, context) {
 	const userName = payload.user.username || userId;
 
 	// Find the funding request
+	// const caisse = await Caisse.findOne({
+	// 	"fundingRequests.requestId": requestId,
+	// });
 	const caisse = await Caisse.findOne({
-		"fundingRequests.requestId": requestId,
+		type: caisseType, // Match by caisseType
+		"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 	});
 	if (!caisse) {
 		console.error(`Caisse not found for request ${requestId}`);
@@ -694,7 +700,7 @@ async function handlePreApproval(payload, context) {
 		console.error(`Request ${requestId} not found`);
 		return createSlackResponse(200, "Demande non trouvée");
 	}
-	const caisseType = caisse.type;
+	// const caisseType = caisse.type;
 	const request = caisse.fundingRequests[requestIndex];
 
 	// Update request status and workflow tracking
@@ -877,7 +883,7 @@ async function handlePreApproval(payload, context) {
 								emoji: true,
 							},
 							style: "primary",
-							value: requestId,
+							value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
 							action_id: "fill_funding_details",
 						},
 					],
@@ -1132,7 +1138,7 @@ function generateRequestDetailBlocks(request, caisseType) {
 			fields: [
 				{
 					type: "mrkdwn",
-					text: `*Type:*\n${caisseType || "N/A"}`, // Use caisseType if request.type is unavailable
+					text: `*Caisse:*\n${caisseType || "N/A"}`, // Use caisseType if request.type is unavailable
 				},
 				{
 					type: "mrkdwn",
@@ -1352,15 +1358,20 @@ function generateFundingDetailsBlocks(
 }
 async function createCaisse(
 	type,
-	initialBalances = { XOF: 0, USD: 0, EUR: 0 }
+	channelId,
+	initialBalances = { XOF: 0, USD: 0, EUR: 0 },channelName
 ) {
 	const caisse = new Caisse({
 		type,
+		channelId, 
+		channelName,
 		balances: initialBalances,
 		transactions: [],
 		fundingRequests: [],
 	});
 	await caisse.save();
+	await syncCaisseToExcel(caisse, null); // Adjust requestId as needed
+
 	return caisse;
 }
 async function transferFundsByType(
@@ -1421,6 +1432,8 @@ async function handleFinanceDetailsSubmission(payload, context) {
 	const metadata = JSON.parse(payload.view.private_metadata);
 	console.log("METADATA:", metadata);
 	const requestId = metadata.requestId;
+	const caisseType = metadata.caisseType;
+
 	const originalMessageTs = metadata.messageTs;
 	const originalChannelId = metadata.channelId;
 	// const channelId = process.env.SLACK_FINANCE_CHANNEL_ID;
@@ -1432,7 +1445,8 @@ async function handleFinanceDetailsSubmission(payload, context) {
 
 	// Find the funding request
 	const caisse = await Caisse.findOne({
-		"fundingRequests.requestId": requestId,
+		type: caisseType, // Match by caisseType
+		"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 	});
 	if (!caisse) {
 		console.error(`Caisse not found for request ${requestId}`);
@@ -1664,7 +1678,7 @@ async function handleFinanceDetailsSubmission(payload, context) {
 		paymentNotes,
 		paymentDetails,
 		userId,
-		caisse.type
+		caisseType
 	);
 
 	//! const additionalDetails =
@@ -1845,7 +1859,7 @@ async function handleFinanceDetailsSubmission(payload, context) {
 								},
 								style: "danger",
 								action_id: "report_fund_problem",
-								value: requestId || "N/A", // Ensure requestId is defined
+								value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
 							},
 						],
 					},
@@ -1952,14 +1966,16 @@ async function handleFinanceDetailsSubmission(payload, context) {
 								type: "button",
 								text: { type: "plain_text", text: "Approuver", emoji: true },
 								style: "primary",
-								value: requestId,
+								value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
+
 								action_id: "funding_approval_payment",
 							},
 							{
 								type: "button",
 								text: { type: "plain_text", text: "Rejeter", emoji: true },
 								style: "danger",
-								value: requestId,
+								value: JSON.stringify({ requestId, caisseType }), // Include caisseType in the value
+
 								action_id: "reject_fund",
 							},
 						],
@@ -2176,6 +2192,7 @@ function getPaymentMethodText(method) {
 }
 async function processFundingApproval(
 	requestId,
+	caisseType,
 	action,
 	rejectionReason = null,
 	messageTs = null,
@@ -2188,7 +2205,8 @@ async function processFundingApproval(
 
 	const { Caisse } = require("./db");
 	const caisse = await Caisse.findOne({
-		"fundingRequests.requestId": requestId,
+		type: caisseType, // Match by caisseType
+		"fundingRequests.requestId": requestId, // Match by requestId within fundingRequests
 	});
 	if (!caisse) throw new Error("Caisse non trouvée");
 
@@ -2303,10 +2321,12 @@ async function processFundingApproval(
 		);
 	}
 }
-
 async function syncCaisseToExcel(caisse, requestId) {
+	console.log("** syncCaisseToExcel");
 	if (process.env.NODE_ENV === "production") {
-		console.log("** syncCaisseToExcel");
+		console.log("Input requestId:", requestId);
+		console.log("Input caisse.type:", caisse.type);
+
 		const maxRetries = 3;
 		for (let i = 0; i < maxRetries; i++) {
 			try {
@@ -2314,44 +2334,189 @@ async function syncCaisseToExcel(caisse, requestId) {
 				const siteId = await getSiteId();
 				const driveId = await getDriveId(siteId);
 				const fileId = process.env.CAISSE_EXCEL_FILE_ID;
-				const tableName = process.env.CAISSE_TABLE_NAME || "";
+				const tableName = process.env.CAISSE_TABLE_NAME;
 
+				if (!tableName) {
+					throw new Error(
+						"Excel table name is not defined in environment variables."
+					);
+				}
+				if (!requestId) {
+					console.log("No requestId provided. Syncing caisse balances only.");
+					const now = new Date();
+					const year = now.getFullYear();
+					const month = (now.getMonth() + 1).toString().padStart(2, "0");
+					const existingRequests = caisse.fundingRequests.filter((req) =>
+						req.requestId.startsWith(`FUND/${year}/${month}/`)
+					);
+					console.log("Existing requests for this month:", existingRequests);
+					const sequence = existingRequests.length + 1;
+					const sequenceStr = sequence.toString().padStart(4, "0");
+					const requestId = `FUND/${year}/${month}/${sequenceStr}`;
+
+					const rowData = [
+						requestId, // Request ID
+						caisse.type,
+						0, // Amount
+						"", // Currency
+						"", // Reason
+						"Nouvelle caisse", // Status
+						"", // Rejection Reason
+						new Date().toLocaleString("fr-FR", {
+							weekday: "long",
+							year: "numeric",
+							month: "long",
+							day: "numeric",
+						}) || new Date().toISOString(), // Requested Date
+						"", // Submitted By
+						"", // Submitted At
+						"", // Approved By
+						"", // Approved At
+						"", // Notes
+						"", // Disbursement Type
+						"",
+						0, // Balance XOF
+						0, // Balance USD
+						0, // Balance EUR
+						"", // Latest Update
+					];
+					// Fetch the table columns to validate the column count
+					const tableColumns = await client
+						.api(
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/columns`
+						)
+						.get();
+					const columnCount = tableColumns.value.length;
+
+					if (rowData.length !== columnCount) {
+						throw new Error(
+							`Column count mismatch: rowData has ${rowData.length} columns, but table expects ${columnCount}`
+						);
+					}
+
+					console.log("Adding new row for caisse:", rowData);
+
+					// Add a new row to the Excel table
+					await client
+						.api(
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
+						)
+						.post({ values: [rowData] });
+
+					console.log("Row added successfully for new caisse.");
+					return;
+				}
 				const request = caisse.fundingRequests.find(
 					(r) => r.requestId === requestId
 				);
-				if (!request) throw new Error(`Funding request ${requestId} not found`);
-				// Prepare cheque details as a single string (if applicable)
+				if (!request) {
+					throw new Error(`Funding request ${requestId} not found`);
+				}
+
 				let paymentDetailsString = "";
 				if (
-					request.paymentDetails?.method &&
-					["cheque", "Chèque"].includes(request.paymentDetails.method) &&
+					request.paymentDetails?.method === "cheque" &&
 					request.paymentDetails.cheque
 				) {
 					const cheque = request.paymentDetails.cheque;
-					const fields = [
-						cheque.number ? `- Numéro du chèque: ${cheque.number}` : null,
-						cheque.bank ? `- Banque: ${cheque.bank}` : null,
-						cheque.date ? `- Date du chèque: ${cheque.date}` : null,
-						cheque.order ? `- Ordre: ${cheque.order}` : null,
-					];
-					// Add file IDs information
-					if (cheque.file_ids && cheque.file_ids.length > 0) {
-						fields.push(
-							`- Fichiers: ${cheque.file_ids.length} fichier(s) associé(s)`
-						);
-						// Optionally include file URLs (truncated)
-						fields.push(
-							`- Liens des fichiers:\n${cheque.file_ids
-								.map((url) => `- ${truncate(url, 50)}`)
-								.join("\n")}`
-						);
+					paymentDetailsString = [
+						cheque.number ? `Numéro: ${cheque.number}` : "",
+						cheque.bank ? `Banque: ${cheque.bank}` : "",
+						cheque.date ? `Date: ${cheque.date}` : "",
+						cheque.order ? `Ordre: ${cheque.order}` : "",
+					]
+						.filter(Boolean)
+						.join(", ");
+				}
+
+				console.log("Fetching existing rows...");
+				const rows = await client
+					.api(
+						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
+					)
+					.get();
+
+				// DEBUG: Log all rows to see what's in the Excel file
+				console.log("Total rows found:", rows.value.length);
+				console.log("First 5 rows in Excel:");
+				rows.value.slice(0, 5).forEach((row, index) => {
+					console.log(`Row ${index}:`, {
+						requestId: row.values[0][0],
+						type: row.values[0][1],
+						fullFirstColumns: row.values[0].slice(0, 5),
+					});
+				});
+
+				// Enhanced row finding with debugging
+				console.log("Searching for existing row...");
+				const existingRowIndex = rows.value.findIndex((row, index) => {
+					const rowRequestId = String(row.values[0][0]);
+					const rowType = String(row.values[0][1]);
+					const targetRequestId = String(requestId);
+					const targetType = String(caisse.type);
+
+					const requestIdMatch = rowRequestId === targetRequestId;
+					const typeMatch = rowType === targetType;
+					const isMatch = requestIdMatch && typeMatch;
+
+					if (index < 3 || isMatch) {
+						// Log first 3 rows or any matches
+						console.log(`Row ${index} comparison:`, {
+							rowRequestId,
+							rowType,
+							targetRequestId,
+							targetType,
+							requestIdMatch,
+							typeMatch,
+							isMatch,
+						});
 					}
 
-					// Add URLs information
-					if (cheque.urls && cheque.urls.length > 0) {
-						fields.push(`- URLs: ${cheque.urls.join(", ")}`);
-					}
-					paymentDetailsString = fields.filter(Boolean).join("\n");
+					return isMatch;
+				});
+
+				// Find the row with "Yes" in the "Dernièrement modifié" column (excluding the current row if it exists)
+				const previousYesRowIndex = rows.value.findIndex(
+					(row, index) =>
+						String(row.values[0][1]) === String(caisse.type) &&
+						String(row.values[0][18]) === "Yes" &&
+						index !== existingRowIndex // Exclude the current row
+				);
+
+				console.log(`Previous "Yes" row index: ${previousYesRowIndex}`);
+				console.log(`Current row index: ${existingRowIndex}`);
+
+				// Log the previous row details before updating
+				if (previousYesRowIndex >= 0) {
+					const previousRow = rows.value[previousYesRowIndex];
+					console.log(`Previous row details:`, {
+						requestId: previousRow.values[0][0],
+						caisseType: previousRow.values[0][1],
+						currentStatus: previousRow.values[0][18],
+						rowIndex: previousYesRowIndex,
+					});
+
+					const previousRowValues = previousRow.values[0];
+					previousRowValues[18] = ""; // Set to "No"
+
+					console.log(
+						`Updating previous "Yes" row at index ${previousYesRowIndex} to "No".`
+					);
+					console.log(`Row values after update:`, {
+						requestId: previousRowValues[0],
+						caisseType: previousRowValues[1],
+						newStatus: previousRowValues[18],
+					});
+
+					await client
+						.api(
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${previousYesRowIndex})`
+						)
+						.patch({ values: [previousRowValues] });
+
+					console.log(
+						`Successfully updated row ${previousYesRowIndex} to "No"`
+					);
 				}
 
 				const rowData = [
@@ -2361,14 +2526,13 @@ async function syncCaisseToExcel(caisse, requestId) {
 					request.currency || "XOF", // Currency
 					request.reason || "", // Reason
 					request.status || "En attente", // Status
-					request.rejectionReason || "", // Status
-
+					request.rejectionReason || "", // Rejection Reason
 					new Date(request.requestedDate).toLocaleString("fr-FR", {
 						weekday: "long",
 						year: "numeric",
 						month: "long",
 						day: "numeric",
-					}) || new Date().toISOString(), // Date requise (same as Requested Date)
+					}) || new Date().toISOString(), // Requested Date
 					request.submittedBy || "", // Submitted By
 					request.submittedAt
 						? new Date(request.submittedAt).toLocaleString("fr-FR", {
@@ -2393,118 +2557,38 @@ async function syncCaisseToExcel(caisse, requestId) {
 								timeZoneName: "short",
 						  })
 						: "", // Approved At
-
 					request.paymentDetails.notes || "", // Notes
 					request.disbursementType || "", // Disbursement Type
-					paymentDetailsString || "", // 15: Détails de Paiement
+					paymentDetailsString || "", // Payment Details
 					caisse.balances.XOF || 0, // Balance XOF
 					caisse.balances.USD || 0, // Balance USD
 					caisse.balances.EUR || 0, // Balance EUR
-					"Yes", // Latest Update
+					"Yes", // Latest Update - this row is now the latest
 				];
-				console.log(
-					`[Excel Integration] Updating row for request ${requestId} with data:`,
-					JSON.stringify(rowData, null, 2)
-				);
-				// Fetch all rows to find the current and previous latest rows
-				console.log(
-					"[Excel Integration] Fetching table rows for requestId:",
-					requestId
-				);
-				const tableRows = await client
-					.api(
-						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
-					)
-					.get();
 
-				// Fetch table columns
-				const tableColumns = await client
-					.api(
-						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/columns`
-					)
-					.get();
-				const columnCount = tableColumns.value.length;
+				console.log("Row data to be inserted/updated:", rowData);
 
-				// Validate rowData length
-				if (rowData.length !== columnCount) {
-					console.error(
-						`[Excel Integration] Error: rowData has ${rowData.length} columns, but table expects ${columnCount}`
-					);
-					throw new Error(
-						"Column count mismatch between rowData and table structure"
-					);
-				}
-				let rowIndex = -1;
-				let previousLatestIndex = -1;
-				if (tableRows && tableRows.value) {
-					rowIndex = tableRows.value.findIndex(
-						(row) =>
-							row.values && row.values[0] && row.values[0][0] === requestId // Adjusted index: Request ID is now at 0
-					);
-					if (caisse.latestRequestId && caisse.latestRequestId !== requestId) {
-						previousLatestIndex = tableRows.value.findIndex(
-							(row) =>
-								row.values &&
-								row.values[0] &&
-								row.values[0][0] === caisse.latestRequestId
-						);
-					}
-				}
-
-				// Update previous latest row to "No" (if it exists)
-				if (previousLatestIndex >= 0 && previousLatestIndex !== rowIndex) {
-					const previousRowValues =
-						tableRows.value[previousLatestIndex].values[0];
-					if (previousRowValues.length >= 15) {
-						// Adjusted for 15 columns
-						previousRowValues[17] = " "; // Adjusted index: Latest Update is now at 14
-						console.log(
-							"[Excel Integration] Updating previous latest row to 'No':",
-							caisse.latestRequestId
-						);
-						await client
-							.api(
-								`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${previousLatestIndex})`
-							)
-							.patch({ values: [previousRowValues] });
-					}
-				}
-
-				// Update or add the current row
-				if (rowIndex >= 0) {
+				if (existingRowIndex >= 0) {
 					console.log(
-						"[Excel Integration] Updating existing row for requestId:",
-						requestId
+						`Updating existing row at index ${existingRowIndex} for requestId: ${requestId}`
 					);
 					await client
 						.api(
-							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${rowIndex})`
+							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${existingRowIndex})`
 						)
 						.patch({ values: [rowData] });
+					console.log(`Successfully updated row ${existingRowIndex}`);
 				} else {
-					console.log(
-						"[Excel Integration] Adding new row for requestId:",
-						requestId
-					);
+					console.log(`Adding new row for requestId: ${requestId}`);
 					await client
 						.api(
 							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
 						)
 						.post({ values: [rowData] });
+					console.log(`Successfully added new row`);
 				}
 
-				// Update latestRequestId in the database
-				caisse.latestRequestId = requestId;
-				console.log(
-					"[Excel Integration] Updating latestRequestId to:",
-					requestId
-				);
-				await caisse.save();
-
-				console.log(
-					"[Excel Integration] Excel sync completed for requestId:",
-					requestId
-				);
+				console.log("Row synced successfully.");
 				return;
 			} catch (error) {
 				console.error("[Excel Integration] Error in syncCaisseToExcel:", {
@@ -2513,16 +2597,256 @@ async function syncCaisseToExcel(caisse, requestId) {
 					attempt: i + 1,
 					requestId,
 				});
+
 				if (i === maxRetries - 1) {
 					throw new Error(`Excel sync failed: ${error.message}`);
 				}
+
 				await new Promise((resolve) => setTimeout(resolve, 1000));
 			}
 		}
 	} else {
-		console.log("** syncCaisseToExcel - Skipped in non-production environment");
+		console.log(
+			"[Excel Integration] Skipping Excel sync in non-production environment"
+		);
+		return true;
 	}
 }
+
+// async function syncCaisseToExcel(caisse, requestId) {
+// 	if (process.env.NODE_ENV === "dev") {
+// 		console.log("** syncCaisseToExcel");
+// 		const maxRetries = 3;
+// 		for (let i = 0; i < maxRetries; i++) {
+// 			try {
+// 				const client = await getGraphClient();
+// 				const siteId = await getSiteId();
+// 				const driveId = await getDriveId(siteId);
+// 				const fileId = process.env.CAISSE_EXCEL_FILE_ID;
+// 				const tableName = process.env.CAISSE_TABLE_NAME || "";
+// 				if (!requestId) {
+// 					console.log("No requestId provided. Syncing caisse balances only.");
+// 					const rowData = [
+// 						caisse.type,
+// 						caisse.balances.XOF || 0, // Balance XOF
+// 						caisse.balances.USD || 0, // Balance USD
+// 						caisse.balances.EUR || 0, // Balance EUR
+// 						"New Caisse", // Status
+// 					];
+
+// 					// Add logic to sync only the caisse balances to Excel
+// 					// Example: Add a new row for the caisse without funding request details
+// 					console.log("Syncing new caisse to Excel:", rowData);
+// 					return;
+// 				}
+
+// 				const request = caisse.fundingRequests.find(
+// 					(r) => r.requestId === requestId
+// 				);
+// 				if (!request) throw new Error(`Funding request ${requestId} not found`);
+// 				// Prepare cheque details as a single string (if applicable)
+// 				let paymentDetailsString = "";
+// 				if (
+// 					request.paymentDetails?.method &&
+// 					["cheque", "Chèque"].includes(request.paymentDetails.method) &&
+// 					request.paymentDetails.cheque
+// 				) {
+// 					const cheque = request.paymentDetails.cheque;
+// 					const fields = [
+// 						cheque.number ? `- Numéro du chèque: ${cheque.number}` : null,
+// 						cheque.bank ? `- Banque: ${cheque.bank}` : null,
+// 						cheque.date ? `- Date du chèque: ${cheque.date}` : null,
+// 						cheque.order ? `- Ordre: ${cheque.order}` : null,
+// 					];
+// 					// Add file IDs information
+// 					if (cheque.file_ids && cheque.file_ids.length > 0) {
+// 						fields.push(
+// 							`- Fichiers: ${cheque.file_ids.length} fichier(s) associé(s)`
+// 						);
+// 						// Optionally include file URLs (truncated)
+// 						fields.push(
+// 							`- Liens des fichiers:\n${cheque.file_ids
+// 								.map((url) => `- ${truncate(url, 50)}`)
+// 								.join("\n")}`
+// 						);
+// 					}
+
+// 					// Add URLs information
+// 					if (cheque.urls && cheque.urls.length > 0) {
+// 						fields.push(`- URLs: ${cheque.urls.join(", ")}`);
+// 					}
+// 					paymentDetailsString = fields.filter(Boolean).join("\n");
+// 				}
+
+// 				const rowData = [
+// 					request.requestId, // Request ID
+// 					caisse.type,
+// 					request.amount || 0, // Amount
+// 					request.currency || "XOF", // Currency
+// 					request.reason || "", // Reason
+// 					request.status || "En attente", // Status
+// 					request.rejectionReason || "", // Status
+
+// 					new Date(request.requestedDate).toLocaleString("fr-FR", {
+// 						weekday: "long",
+// 						year: "numeric",
+// 						month: "long",
+// 						day: "numeric",
+// 					}) || new Date().toISOString(), // Date requise (same as Requested Date)
+// 					request.submittedBy || "", // Submitted By
+// 					request.submittedAt
+// 						? new Date(request.submittedAt).toLocaleString("fr-FR", {
+// 								weekday: "long",
+// 								year: "numeric",
+// 								month: "long",
+// 								day: "numeric",
+// 								hour: "2-digit",
+// 								minute: "2-digit",
+// 								timeZoneName: "short",
+// 						  })
+// 						: "", // Submitted At
+// 					request.approvedBy || "", // Approved By
+// 					request.approvedAt
+// 						? new Date(request.approvedAt).toLocaleString("fr-FR", {
+// 								weekday: "long",
+// 								year: "numeric",
+// 								month: "long",
+// 								day: "numeric",
+// 								hour: "2-digit",
+// 								minute: "2-digit",
+// 								timeZoneName: "short",
+// 						  })
+// 						: "", // Approved At
+
+// 					request.paymentDetails.notes || "", // Notes
+// 					request.disbursementType || "", // Disbursement Type
+// 					paymentDetailsString || "", // 15: Détails de Paiement
+// 					caisse.balances.XOF || 0, // Balance XOF
+// 					caisse.balances.USD || 0, // Balance USD
+// 					caisse.balances.EUR || 0, // Balance EUR
+// 					"Yes", // Latest Update
+// 				];
+// 				console.log(
+// 					`[Excel Integration] Updating row for request ${requestId} with data:`,
+// 					JSON.stringify(rowData, null, 2)
+// 				);
+// 				// Fetch all rows to find the current and previous latest rows
+// 				console.log(
+// 					"[Excel Integration] Fetching table rows for requestId:",
+// 					requestId
+// 				);
+// 				const tableRows = await client
+// 					.api(
+// 						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
+// 					)
+// 					.get();
+
+// 				// Fetch table columns
+// 				const tableColumns = await client
+// 					.api(
+// 						`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/columns`
+// 					)
+// 					.get();
+// 				const columnCount = tableColumns.value.length;
+
+// 				// Validate rowData length
+// 				if (rowData.length !== columnCount) {
+// 					console.error(
+// 						`[Excel Integration] Error: rowData has ${rowData.length} columns, but table expects ${columnCount}`
+// 					);
+// 					throw new Error(
+// 						"Column count mismatch between rowData and table structure"
+// 					);
+// 				}
+// 				let rowIndex = -1;
+// 				let previousLatestIndex = -1;
+// 				if (tableRows && tableRows.value) {
+// 					rowIndex = tableRows.value.findIndex(
+// 						(row) =>
+// 							row.values && row.values[0] && row.values[0][0] === requestId // Adjusted index: Request ID is now at 0
+// 					);
+// 					if (caisse.latestRequestId && caisse.latestRequestId !== requestId) {
+// 						previousLatestIndex = tableRows.value.findIndex(
+// 							(row) =>
+// 								row.values &&
+// 								row.values[0] &&
+// 								row.values[0][0] === caisse.latestRequestId
+// 						);
+// 					}
+// 				}
+
+// 				// Update previous latest row to "No" (if it exists)
+// 				if (previousLatestIndex >= 0 && previousLatestIndex !== rowIndex) {
+// 					const previousRowValues =
+// 						tableRows.value[previousLatestIndex].values[0];
+// 					if (previousRowValues.length >= 15) {
+// 						// Adjusted for 15 columns
+// 						previousRowValues[17] = " "; // Adjusted index: Latest Update is now at 14
+// 						console.log(
+// 							"[Excel Integration] Updating previous latest row to 'No':",
+// 							caisse.latestRequestId
+// 						);
+// 						await client
+// 							.api(
+// 								`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${previousLatestIndex})`
+// 							)
+// 							.patch({ values: [previousRowValues] });
+// 					}
+// 				}
+
+// 				// Update or add the current row
+// 				if (rowIndex >= 0) {
+// 					console.log(
+// 						"[Excel Integration] Updating existing row for requestId:",
+// 						requestId
+// 					);
+// 					await client
+// 						.api(
+// 							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows/itemAt(index=${rowIndex})`
+// 						)
+// 						.patch({ values: [rowData] });
+// 				} else {
+// 					console.log(
+// 						"[Excel Integration] Adding new row for requestId:",
+// 						requestId
+// 					);
+// 					await client
+// 						.api(
+// 							`/sites/${siteId}/drives/${driveId}/items/${fileId}/workbook/tables/${tableName}/rows`
+// 						)
+// 						.post({ values: [rowData] });
+// 				}
+
+// 				// Update latestRequestId in the database
+// 				caisse.latestRequestId = requestId;
+// 				console.log(
+// 					"[Excel Integration] Updating latestRequestId to:",
+// 					requestId
+// 				);
+// 				await caisse.save();
+
+// 				console.log(
+// 					"[Excel Integration] Excel sync completed for requestId:",
+// 					requestId
+// 				);
+// 				return;
+// 			} catch (error) {
+// 				console.error("[Excel Integration] Error in syncCaisseToExcel:", {
+// 					message: error.message,
+// 					stack: error.stack,
+// 					attempt: i + 1,
+// 					requestId,
+// 				});
+// 				if (i === maxRetries - 1) {
+// 					throw new Error(`Excel sync failed: ${error.message}`);
+// 				}
+// 				await new Promise((resolve) => setTimeout(resolve, 1000));
+// 			}
+// 		}
+// 	} else {
+// 		console.log("** syncCaisseToExcel - Skipped in non-production environment");
+// 	}
+// }
 
 // Generate Report
 async function generateCaisseReport(context, format = "csv") {
@@ -2640,6 +2964,7 @@ async function generateCorrectionModal(
 		console.error(`Caisse not found for request ${requestId}`);
 		return;
 	}
+
 	const request = caisse.fundingRequests.find((r) => r.requestId === requestId);
 	if (!request) {
 		console.error(`Request ${requestId} not found`);

@@ -1,11 +1,15 @@
 // src/notificationService.js
 const { postSlackMessage } = require("./utils");
-const { Order, PaymentRequest, OrderMessage } = require("./db");
+const { Order, PaymentRequest, Caisse } = require("./db");
 const axios = require("axios");
 const mongoose = require("mongoose");
 
 // Reintroduced and optimized getPaymentRequestBlocks
-function getPaymentRequestBlocks(paymentRequest, validatedBy = null, isNew = false) {
+function getPaymentRequestBlocks(
+	paymentRequest,
+	validatedBy = null,
+	isNew = false
+) {
 	try {
 		// Create blocks for notification
 		const blocks = [
@@ -14,7 +18,9 @@ function getPaymentRequestBlocks(paymentRequest, validatedBy = null, isNew = fal
 				text: {
 					type: "plain_text",
 
-                    text: isNew ? `➡️ Nouvelle demande de paiement: ${paymentRequest.id_paiement}` : `💳 Demande de paiement: ${paymentRequest.id_paiement}`,
+					text: isNew
+						? `➡️ Nouvelle demande de paiement: ${paymentRequest.id_paiement}`
+						: `💳 Demande de paiement: ${paymentRequest.id_paiement}`,
 					emoji: true,
 				},
 			},
@@ -181,7 +187,7 @@ async function notifyPaymentRequest(
 			elements: [
 				{
 					type: "button",
-					text: { type: "plain_text", text: "Autoriser", emoji: true },
+					text: { type: "plain_text", text: "Approuver", emoji: true },
 					style: "primary",
 					action_id: "payment_verif_accept",
 					value: paymentRequest.id_paiement,
@@ -408,79 +414,83 @@ function generateArticleBlocks(articles) {
 
 // Modified getOrderBlocks function to support custom header for new orders
 function getOrderBlocks(order, requestDate, isNewOrder = false) {
-    console.log("** getOrderBlocks");
-    return [
-        {
-            type: "header",
-            text: {
-                type: "plain_text",
-                text: isNewOrder ? `➡️ Nouvelle Commande: ${order.id_commande}` : `📦 Commande: ${order.id_commande}`,
-                emoji: true,
-            },
-        },
-        {
-            type: "section",
-            fields: [
-                { type: "mrkdwn", text: `*Titre:*\n${order.titre}` },
-                {
-                    type: "mrkdwn",
-                    text: `*Date:*\n${new Date(order.date).toLocaleString("fr-FR", {
-                        weekday: "long",
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        timeZoneName: "short",
-                    })}`,
-                },
-            ],
-        },
-        {
-            type: "section",
-            fields: [
-                { type: "mrkdwn", text: `*Demandeur:*\n<@${order.demandeur}>` },
-                { type: "mrkdwn", text: `*Canal:*\n<#${order.channelId}>` },
-            ],
-        },
-        {
-            type: "section",
-            fields: [
-                {
-                    type: "mrkdwn",
-                    text: `*Équipe:*\n${order.equipe || "Non spécifié"}`,
-                },
-                {
-                    type: "mrkdwn",
-                    text: `*Date requise:*\n${
-                        new Date(order.date_requete).toLocaleString("fr-FR", {
-                            weekday: "long",
-                            year: "numeric",
-                            month: "long",
-                            day: "numeric",
-                        }) || new Date().toISOString()
-                    }`,
-                },
-            ],
-        },
-        // Add order ID section for new orders
-        ...(isNewOrder ? [{
-            type: "section",
-            fields: [
-                {
-                    type: "mrkdwn",
-                    text: `*ID Commande:*\n${order.id_commande}`,
-                },
-            ],
-        }] : []),
-        { type: "divider" },
-        { type: "section", text: { type: "mrkdwn", text: `*Articles*` } },
-        ...generateArticleBlocks(order.articles),
-        { type: "divider" },
-    ];
+	console.log("** getOrderBlocks");
+	return [
+		{
+			type: "header",
+			text: {
+				type: "plain_text",
+				text: isNewOrder
+					? `➡️ Nouvelle Commande: ${order.id_commande}`
+					: `📦 Commande: ${order.id_commande}`,
+				emoji: true,
+			},
+		},
+		{
+			type: "section",
+			fields: [
+				{ type: "mrkdwn", text: `*Titre:*\n${order.titre}` },
+				{
+					type: "mrkdwn",
+					text: `*Date:*\n${new Date(order.date).toLocaleString("fr-FR", {
+						weekday: "long",
+						year: "numeric",
+						month: "long",
+						day: "numeric",
+						hour: "2-digit",
+						minute: "2-digit",
+						timeZoneName: "short",
+					})}`,
+				},
+			],
+		},
+		{
+			type: "section",
+			fields: [
+				{ type: "mrkdwn", text: `*Demandeur:*\n<@${order.demandeur}>` },
+				{ type: "mrkdwn", text: `*Canal:*\n<#${order.channelId}>` },
+			],
+		},
+		{
+			type: "section",
+			fields: [
+				{
+					type: "mrkdwn",
+					text: `*Équipe:*\n${order.equipe || "Non spécifié"}`,
+				},
+				{
+					type: "mrkdwn",
+					text: `*Date requise:*\n${
+						new Date(order.date_requete).toLocaleString("fr-FR", {
+							weekday: "long",
+							year: "numeric",
+							month: "long",
+							day: "numeric",
+						}) || new Date().toISOString()
+					}`,
+				},
+			],
+		},
+		// // Add order ID section for new orders
+		// ...(isNewOrder
+		// 	? [
+		// 			{
+		// 				type: "section",
+		// 				fields: [
+		// 					{
+		// 						type: "mrkdwn",
+		// 						text: `*ID Commande:*\n${order.id_commande}`,
+		// 					},
+		// 				],
+		// 			},
+		// 	  ]
+		// 	: []),
+		{ type: "divider" },
+		{ type: "section", text: { type: "mrkdwn", text: `*Articles*` } },
+		...generateArticleBlocks(order.articles),
+		{ type: "divider" },
+	];
 }
-
-
 
 // ...existing code...
 // New function to generate photo blocks for individual articles
@@ -801,6 +811,15 @@ async function getPaymentBlocks(
 			: "N/A";
 	console.log("totalAmountPaid1", totalAmountPaid);
 	console.log("paymentData", paymentData);
+	// Handle Mobile Money fee logic
+	let adjustedRemainingAmount = remainingAmount;
+	let adjustedTotalAmountPaid = totalAmountPaid;
+	let mobileMoneyFee = null;
+
+	if (paymentData.mode === "Mobile Money" && remainingAmount < 0) {
+		// Adjust amounts for Mobile Money overpayment
+		adjustedRemainingAmount = 0;
+	}
 	const amountPaid1 = entity.amountPaid || 0;
 	const remainingAmount1 = totalAmountPaid - amountPaid1;
 	const additionalDetails = [];
@@ -862,6 +881,12 @@ async function getPaymentBlocks(
 					paymentData.details?.mobilemoney_sender_phone || "N/A"
 				}`,
 			},
+			{
+				type: "mrkdwn",
+				text: `*Montant des frais:*\n${
+					paymentData.details?.mobilemoney_fees || "N/A"
+				}`,
+			},
 
 			{
 				type: "mrkdwn",
@@ -921,7 +946,7 @@ async function getPaymentBlocks(
 			type: "header",
 			text: {
 				type: "plain_text",
-				text: `💲 Paiement Enregistré: ${
+				text: `✅ 💲 Paiement Enregistré: ${
 					entity.id_commande || entity.id_paiement
 				}`,
 				emoji: true,
@@ -955,7 +980,7 @@ async function getPaymentBlocks(
 				},
 				{
 					type: "mrkdwn",
-					text: `*Reste à payer:*\n${remainingAmount} ${currency}`,
+					text: `*Reste à payer:*\n${adjustedRemainingAmount} ${currency}`,
 				},
 			],
 		},
@@ -1165,7 +1190,9 @@ async function notifyPayment(
 	paymentStatus,
 	context,
 	target,
-	userId
+	userId,
+	targetChannelId,
+	selectedCaisseId
 ) {
 	console.log("** notifyPayment");
 	console.log("target", target);
@@ -1182,15 +1209,17 @@ async function notifyPayment(
 		paymentStatus
 	);
 	console.log("FIN getPaymentBlocks");
-
+	console.log(" targetChannelId", targetChannelId);
 	const channel =
 		target === "finance"
-			? process.env.SLACK_FINANCE_CHANNEL_ID
+			? targetChannelId
 			: target === "admin"
 			? process.env.SLACK_ADMIN_ID
 			: entity.demandeurId;
 	const text = `💲 Paiement Enregistré pour ${entityId}`;
+	console.log("  remainingAmount", remainingAmount);
 	if (target === "finance" && remainingAmount > 0) {
+		console.log("target === finance");
 		blocks.push({
 			type: "actions",
 			elements: [
@@ -1203,7 +1232,10 @@ async function notifyPayment(
 					},
 					style: "primary",
 					action_id: "finance_payment_form",
-					value: entityId,
+					value: JSON.stringify({
+						entityId: entityId,
+						selectedCaisseId: selectedCaisseId,
+					}),
 				},
 				{
 					type: "button",
@@ -1214,12 +1246,16 @@ async function notifyPayment(
 					},
 					style: "danger",
 					action_id: "report_problem",
-					value: entityId,
+					value: JSON.stringify({
+						entityId: entityId,
+						selectedCaisseId: selectedCaisseId,
+					}),
 				},
 			],
 		});
 	}
-	if (target === "user") {
+	if (target === "user" || target === "admin") {
+		console.log("target === user || target === admin");
 		blocks.push({
 			type: "actions",
 			elements: [
@@ -1232,7 +1268,32 @@ async function notifyPayment(
 					},
 					style: "danger",
 					action_id: "report_problem",
-					value: entityId,
+					value: JSON.stringify({
+						entityId: entityId,
+						selectedCaisseId: selectedCaisseId,
+					}),
+				},
+			],
+		});
+	}
+	if (target === "finance" && remainingAmount == 0) {
+		console.log("target === finance && remainingAmount == 0");
+		blocks.push({
+			type: "actions",
+			elements: [
+				{
+					type: "button",
+					text: {
+						type: "plain_text",
+						text: "Signaler un problème",
+						emoji: true,
+					},
+					style: "danger",
+					action_id: "report_problem",
+					value: JSON.stringify({
+						entityId: entityId,
+						selectedCaisseId: selectedCaisseId,
+					}),
 				},
 			],
 		});
@@ -1353,9 +1414,10 @@ function getProformaBlocks1(order) {
 }
 
 // Modifiez notifyTeams pour sauvegarder la référence du message dans le canal achat
-async function notifyTeams(payload, order, context) {
+async function notifyTeams(payload, comment, order, context) {
 	console.log("** notifyTeams");
 	console.log("notifyTeams1", notifyTeams);
+	console.log("comment", comment);
 	const requestDate =
 		order.date_requete || new Date(order.date).toISOString().split("T")[0];
 	const validatedBy = payload.user.id;
@@ -1374,7 +1436,8 @@ async function notifyTeams(payload, order, context) {
 	console.log("text:", text);
 	// const productPhotoBlocks = generateProductPhotosBlocks(order.productPhotos);
 	const validatedProforma = order.proformas.find((p) => p.validated === true);
-	const validationComment = validatedProforma?.validationComment;
+	// const validationComment = validatedProforma?.validationComment;
+
 	const blocks =
 		order.proformas.length === 0
 			? [
@@ -1400,10 +1463,28 @@ async function notifyTeams(payload, order, context) {
 					{
 						type: "context",
 						elements: [
-							
+							// {
+							// 	type: "mrkdwn",
+							// 	text: `:white_check_mark: Approuvée le ${new Date().toLocaleString(
+							// 		"fr-FR",
+							// 		{
+							// 			weekday: "long",
+							// 			year: "numeric",
+							// 			month: "long",
+							// 			day: "numeric",
+							// 			hour: "2-digit",
+							// 			minute: "2-digit",
+							// 			timeZoneName: "short",
+							// 		}
+							// 	)} ${validatedBy ? `par <@${validatedBy}>` : ""}${
+							// 		validationComment && validationComment.trim() !== ""
+							// 			? `\n💬 *Note:* ${validationComment}`
+							// 			: ""
+							// 	}`,
+							// },
 							{
 								type: "mrkdwn",
-								text: `:white_check_mark: Validée le ${new Date().toLocaleString(
+								text: `:white_check_mark: Approuvée le ${new Date().toLocaleString(
 									"fr-FR",
 									{
 										weekday: "long",
@@ -1415,8 +1496,8 @@ async function notifyTeams(payload, order, context) {
 										timeZoneName: "short",
 									}
 								)} ${validatedBy ? `par <@${validatedBy}>` : ""}${
-									validationComment && validationComment.trim() !== ""
-										? `\n💬 *Note:* ${validationComment}`
+									comment && comment.trim() !== ""
+										? `\n💬 *Note:* ${comment}`
 										: ""
 								}`,
 							},
@@ -1443,14 +1524,38 @@ async function notifyTeams(payload, order, context) {
 							},
 						],
 					},
+					// {
+					// 	type: "context",
+					// 	elements: [
+					// 		{
+					// 			type: "mrkdwn",
+					// 			text: `✅ MMValidé par: <@${validatedBy}>${
+					// 				validationComment && validationComment.trim() !== ""
+					// 					? `\n💬 *Note:* ${validationComment}`
+					// 					: ""
+					// 			}`,
+					// 		},
+					// 	],
+					// },
 					{
 						type: "context",
 						elements: [
 							{
 								type: "mrkdwn",
-								text: `✅ Validé par: <@${validatedBy}>${
-									validationComment && validationComment.trim() !== ""
-										? `\n💬 *Note:* ${validationComment}`
+								text: `:white_check_mark: Approuvée le ${new Date().toLocaleString(
+									"fr-FR",
+									{
+										weekday: "long",
+										year: "numeric",
+										month: "long",
+										day: "numeric",
+										hour: "2-digit",
+										minute: "2-digit",
+										timeZoneName: "short",
+									}
+								)} ${validatedBy ? `par <@${validatedBy}>` : ""}${
+									comment && comment.trim() !== ""
+										? `\n💬 *Note:* ${comment}`
 										: ""
 								}`,
 							},
@@ -1552,7 +1657,7 @@ async function notifyAdminProforma(context, order, msgts, proformaIndex) {
 								elements: [
 									{
 										type: "mrkdwn",
-										text: `:white_check_mark: Validée ${
+										text: `:white_check_mark: Approuvée ${
 											p.validatedAt
 												? `le ${new Date(p.validatedAt).toLocaleString()}`
 												: ""
@@ -1712,7 +1817,7 @@ async function notifyAdminProforma(context, order, msgts, proformaIndex) {
 								elements: [
 									{
 										type: "mrkdwn",
-										text: `:white_check_mark: Validée ${
+										text: `:white_check_mark: Approuvée ${
 											p.validatedAt
 												? `le ${new Date(p.validatedAt).toLocaleString()}`
 												: ""
@@ -2145,7 +2250,7 @@ async function sendDelayReminder(order, context, type = "admin") {
 						elements: [
 							{
 								type: "button",
-								text: { type: "plain_text", text: "Autoriser", emoji: true },
+								text: { type: "plain_text", text: "Approuver", emoji: true },
 								style: "primary",
 								action_id: "payment_verif_accept",
 								value: order.id_commande,
@@ -2290,103 +2395,105 @@ function generateProductPhotosBlocks(productPhotos) {
 }
 // Modified notifyAdmin function
 async function notifyAdmin(
-    order,
-    context,
-    isEdit = false,
-    admin_action = false,
-    status
+	order,
+	context,
+	isEdit = false,
+	admin_action = false,
+	status
 ) {
-    console.log("** notifyAdmin");
-    const requestDate =
-        order.date_requete || new Date(order.date).toISOString().split("T")[0];
-    
-    // Determine if this is a new order (not edit and no admin action)
-    const isNewOrder = !isEdit && !admin_action;
-    
-    const blocks = [
-        ...(isEdit
-            ? [
-                    {
-                        type: "section",
-                        text: {
-                            type: "mrkdwn",
-                            text: `*Commande modifiée: ${order.id_commande}*`,
-                        },
-                    },
-              ]
-            : []),
-        ...getOrderBlocks(order, requestDate, isNewOrder),
-        ...getProformaBlocks(order),
-        ...(!admin_action
-            ? [
-                    {
-                        type: "actions",
-                        elements: [
-                            {
-                                type: "button",
-                                text: { type: "plain_text", text: "Approuver", emoji: true },
-                                style: "primary",
-                                action_id: "payment_verif_accept",
-                                value: order.id_commande,
-                            },
-                            {
-                                type: "button",
-                                text: { type: "plain_text", text: "Rejeter", emoji: true },
-                                style: "danger",
-                                action_id: "reject_order",
-                                value: order.id_commande,
-                            },
-                        ],
-                    },
-                    {
-                        type: "context",
-                        elements: [
-                            { type: "mrkdwn", text: "⏳ En attente de votre validation" },
-                        ],
-                    },
-              ]
-            : [
-                    {
-                        type: "section",
-                        text: {
-                            type: "mrkdwn",
-                            text: `Demande ${status}e avec succès`,
-                        },
-                    },
-              ]),
-    ];
+	console.log("** notifyAdmin");
+	const requestDate =
+		order.date_requete || new Date(order.date).toISOString().split("T")[0];
 
-    const existingMessage = await getOrderMessageFromDB(order.id_commande);
-    if (existingMessage && isEdit) {
-        return await postSlackMessageWithRetry(
-            "https://slack.com/api/chat.update",
-            {
-                channel: existingMessage.channel,
-                ts: existingMessage.ts,
-                text: `Commande modifiée: ${order.id_commande}`,
-                blocks,
-            },
-            process.env.SLACK_BOT_TOKEN,
-            context
-        );
-    } else {
-        const response = await postSlackMessageWithRetry(
-            "https://slack.com/api/chat.postMessage",
-            {
-                channel: process.env.SLACK_ADMIN_ID,
-                text: isNewOrder ? `Nouvelle commande reçue: ${order.id_commande}` : `Commande reçue: ${order.id_commande}`,
-                blocks,
-            },
-            process.env.SLACK_BOT_TOKEN,
-            context
-        );
-        await saveOrderMessageToDB(order.id_commande, {
-            channel: response.channel,
-            ts: response.ts,
-            orderId: order.id_commande,
-        });
-        return response;
-    }
+	// Determine if this is a new order (not edit and no admin action)
+	const isNewOrder = !isEdit && !admin_action;
+
+	const blocks = [
+		...(isEdit
+			? [
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `*Commande modifiée: ${order.id_commande}*`,
+						},
+					},
+			  ]
+			: []),
+		...getOrderBlocks(order, requestDate, isNewOrder),
+		...getProformaBlocks(order),
+		...(!admin_action
+			? [
+					{
+						type: "actions",
+						elements: [
+							{
+								type: "button",
+								text: { type: "plain_text", text: "Approuver", emoji: true },
+								style: "primary",
+								action_id: "payment_verif_accept",
+								value: order.id_commande,
+							},
+							{
+								type: "button",
+								text: { type: "plain_text", text: "Rejeter", emoji: true },
+								style: "danger",
+								action_id: "reject_order",
+								value: order.id_commande,
+							},
+						],
+					},
+					{
+						type: "context",
+						elements: [
+							{ type: "mrkdwn", text: "⏳ En attente de votre validation" },
+						],
+					},
+			  ]
+			: [
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `Demande ${status}e avec succès`,
+						},
+					},
+			  ]),
+	];
+
+	const existingMessage = await getOrderMessageFromDB(order.id_commande);
+	if (existingMessage && isEdit) {
+		return await postSlackMessageWithRetry(
+			"https://slack.com/api/chat.update",
+			{
+				channel: existingMessage.channel,
+				ts: existingMessage.ts,
+				text: `Commande modifiée: ${order.id_commande}`,
+				blocks,
+			},
+			process.env.SLACK_BOT_TOKEN,
+			context
+		);
+	} else {
+		const response = await postSlackMessageWithRetry(
+			"https://slack.com/api/chat.postMessage",
+			{
+				channel: process.env.SLACK_ADMIN_ID,
+				text: isNewOrder
+					? `Nouvelle commande reçue: ${order.id_commande}`
+					: `Commande reçue: ${order.id_commande}`,
+				blocks,
+			},
+			process.env.SLACK_BOT_TOKEN,
+			context
+		);
+		await saveOrderMessageToDB(order.id_commande, {
+			channel: response.channel,
+			ts: response.ts,
+			orderId: order.id_commande,
+		});
+		return response;
+	}
 }
 
 async function notifyUser(order, userId, context) {
@@ -2543,7 +2650,9 @@ module.exports = {
 		paymentStatus,
 		context,
 		target,
-		userId
+		userId,
+		targetChannelId,
+		selectedCaisseId
 	) =>
 		notifyPayment(
 			entityId,
@@ -2553,7 +2662,9 @@ module.exports = {
 			paymentStatus,
 			context,
 			target,
-			userId
+			userId,
+			targetChannelId,
+			selectedCaisseId
 		),
 	sendDelayReminder: (order, type) => sendDelayReminder(order, type),
 	postSlackMessageWithRetry,

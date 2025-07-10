@@ -64,7 +64,7 @@ async function checkPendingPaymentRequestDelays(context) {
 
 async function checkPaymentRequestApprovalDelays(context) {
 	try {
-		console.log("** checkPaymentRequestApprovalDelays");
+		console.log("** 2 checkPaymentRequestApprovalDelays");
 
 		const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 		console.log(
@@ -124,7 +124,7 @@ async function checkPaymentRequestApprovalDelays(context) {
 
 async function checkPaymentRequestApprovalDelays(context) {
 	try {
-		console.log("** checkPaymentRequestApprovalDelays");
+		console.log("** 1 checkPaymentRequestApprovalDelays");
 
 		const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 		console.log(
@@ -200,5 +200,5 @@ function setupPaymentRequestDelayMonitoring(context) {
 module.exports = {
 	checkPendingPaymentRequestDelays,
 	checkPaymentRequestApprovalDelays,
-	setupPaymentRequestDelayMonitoring,
+	setupPaymentRequestDelayMonitoring
 };
