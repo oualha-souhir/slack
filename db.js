@@ -65,6 +65,11 @@ const OrderSchema = new mongoose.Schema(
 			ts: { type: String }, // Message timestamp
 			createdAt: { type: Date, default: Date.now },
 		},
+		financeMessageTransfer: {
+			ts: { type: String }, // Message timestamp
+			createdAt: { type: Date, default: Date.now },
+			channel: { type: String, default: "" }, // Channel ID for transfer messages
+		},
 		adminMessage: {
 			ts: { type: String }, // Message timestamp
 			createdAt: { type: Date, default: Date.now },
@@ -124,8 +129,9 @@ const OrderSchema = new mongoose.Schema(
 		blockPayment: { type: Boolean, default: false },
 		// validatedBy: { type: String, default: "Admin" },
 		validatedBy: { type: String, default: "" },
+		validatedAt: { type: Date, default: null }, // Date when the order was validated
 
-		statut: { type: String, enum: ["En attente", "Validé", "Rejeté"] },
+		statut: { type: String, enum: ["En attente", "Validé", "Rejeté", "Supprimée"] },
 		rejection_reason: { type: String, default: null },
 		date: { type: Date, default: Date.now },
 		date_requete: { type: String, required: true }, // Requested payment date
@@ -368,6 +374,7 @@ const PaymentRequestSchema = new mongoose.Schema({
 			"Payé",
 			"Paiement Partiel",
 			"Annulé",
+			"Supprimée"
 		],
 		default: "En attente",
 	},
@@ -386,7 +393,8 @@ const PaymentRequestSchema = new mongoose.Schema({
 	rejectedByName: { type: String, default: null },
 	rejectedById: { type: String, default: null },
 	rejection_reason: { type: String, default: null },
-
+	validatedBy: { type: String, default: "" }, // User ID of the person who validated the payment request
+	validatedAt: { type: Date, default: null }, // Date when the payment request was validated
 	autorisation_admin: { type: Boolean, default: false },
 	payments: [
 		{
@@ -401,7 +409,19 @@ const PaymentRequestSchema = new mongoose.Schema({
 		},
 	],
 	paymentDone: { type: String, default: "false" },
-
+	financeMessage: {
+		ts: { type: String }, // Message timestamp
+		createdAt: { type: Date, default: Date.now },
+	},
+	financeMessageTransfer: {
+		ts: { type: String }, // Message timestamp
+		createdAt: { type: Date, default: Date.now },
+		channel: { type: String, default: "" }, // Channel ID for transfer messages
+	},
+	adminMessage: {
+		ts: { type: String }, // Message timestamp
+		createdAt: { type: Date, default: Date.now },
+	},
 	devise: {
 		type: String,
 		required: false,
@@ -782,13 +802,14 @@ const transactionSchema = new mongoose.Schema({
 	timestamp: { type: Date, default: Date.now },
 	paymentMethod: { type: String },
 	paymentDetails: { type: mongoose.Schema.Types.Mixed },
-	accountingRequired: { type: String }, 
-	transferDetails: { // Add transfer-specific details
-        from: { type: String }, // Source caisse channel ID
-        to: { type: String }, // Destination caisse channel ID
-        motif: { type: String }, // Transfer reason
-        approvedBy: { type: String }, // Who approved the transfer
-    },
+	accountingRequired: { type: String },
+	transferDetails: {
+		// Add transfer-specific details
+		from: { type: String }, // Source caisse channel ID
+		to: { type: String }, // Destination caisse channel ID
+		motif: { type: String }, // Transfer reason
+		approvedBy: { type: String }, // Who approved the transfer
+	},
 });
 const PaymentCounterSchema = new mongoose.Schema({
 	periodId: { type: String, required: true, unique: true },
@@ -826,7 +847,7 @@ const caisseSchema = new mongoose.Schema({
 	},
 	latestRequestId: { type: String },
 	fundingRequests: [fundingRequestSchema],
-	transferRequests: [transferRequestSchema], 
+	transferRequests: [transferRequestSchema],
 	transactions: [transactionSchema],
 });
 

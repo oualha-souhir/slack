@@ -304,7 +304,7 @@ function determinePaymentStatus(totalAmountDue, amountPaid) {
 		);
 	}
 	if (amountPaid === 0) return "En attente";
-	if (amountPaid < totalAmountDue) return "Paiement Partiel";
+	if (amountPaid < totalAmountDue) return "Non payé";
 	return "Payé";
 }
 

@@ -1790,8 +1790,9 @@ async function handleOrderSlackApi(request, context) {
 				});
 			}
 			if (text.trim() === "check-delays") {
-				await checkPendingOrderDelays();
-				await checkPaymentDelays();
+				console.log("** check-delays 1");
+				// await checkPendingOrderDelays();
+				// await checkPaymentDelays();
 				await checkProformaDelays();
 				return createSlackResponse(200, "Delay check completed!");
 			}

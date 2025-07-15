@@ -1,7 +1,7 @@
 //src/form.js
 const { postSlackMessage, createSlackResponse } = require("./utils");
 const { getFileInfo } = require("./utils");
-const { Order, PaymentRequest } = require("./db"); // Import Order model
+const { Order, PaymentRequest, Caisse } = require("./db"); // Import Order model
 const {
 	getEquipeOptions,
 	getUnitOptions,
@@ -599,6 +599,41 @@ const bankOptions = [
 	{ text: { type: "plain_text", text: "BRM CI" }, value: "BRM_CI" },
 	{ text: { type: "plain_text", text: "Autre" }, value: "Autre" },
 ];
+let caisseTypesCache = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+
+async function getCaisseTypes() {
+	const now = Date.now();
+
+	// Check if cache is valid
+	if (
+		caisseTypesCache &&
+		cacheTimestamp &&
+		now - cacheTimestamp < CACHE_DURATION
+	) {
+		return caisseTypesCache;
+	}
+
+	// Refresh cache
+	try {
+		const caisses = await Caisse.find({}, "type").exec();
+		caisseTypesCache = caisses.map((caisse) => ({
+			text: { type: "plain_text", text: caisse.type },
+			value: caisse.type,
+		}));
+		cacheTimestamp = now;
+		return caisseTypesCache;
+	} catch (error) {
+		// Return cached data if available, otherwise throw
+		if (caisseTypesCache) {
+			console.warn("Database query failed, using cached caisse types");
+			return caisseTypesCache;
+		}
+		throw error;
+	}
+}
 async function generatePaymentForm({
 	payload,
 	action,
@@ -607,10 +642,21 @@ async function generatePaymentForm({
 	orderId,
 	selectedCaisseId,
 }) {
+	const caisseOptions = await getCaisseTypes();
+	console.log("** selectedPaymentMode", selectedPaymentMode);
 	console.log("** ''generatePaymentForm");
 	context.log("Opening payment modal for order:", action.value);
 	context.log("Génération du formulaire pour le mode:", selectedPaymentMode);
 	console.log("selectedCaisseId::::", selectedCaisseId);
+	if (selectedCaisseId == null) {
+		// Try to find the caisse with type = "Centrale"
+		const centraleCaisse = await Caisse.findOne({ type: "Centrale" });
+		if (centraleCaisse) {
+			selectedCaisseId = centraleCaisse._id.toString();
+		} else {
+			selectedCaisseId = "6848a25fe472b1c054fef321";
+		}
+	}
 	// Parse private_metadata if available (for updates from modal)
 	const privateMetadata = payload.view
 		? JSON.parse(payload.view.private_metadata || "{}")
@@ -758,6 +804,7 @@ async function generatePaymentForm({
 		};
 		return methodMap[method] || method;
 	};
+	console.log("** caisseBalance", caisseBalance);
 	const baseBlocks = [
 		// Add caisse balance display block if balance is available
 		...(caisseBalance !== null || orderRemainingAmount !== null
@@ -789,6 +836,7 @@ async function generatePaymentForm({
 					},
 			  ]
 			: []),
+		// Only show payment method selection for payment requests (PAY/), not orders (CMD/)
 
 		{
 			type: "input",
@@ -1003,7 +1051,6 @@ async function generatePaymentForm({
 							text: "Montant des frais",
 						},
 					},
-					
 				},
 				{
 					type: "input",

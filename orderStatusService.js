@@ -18,6 +18,7 @@ async function handleOrderStatus(payload, comment, action, context) {
 	console.log("==: comment", comment);
 
 	let paymentId;
+	
 	// Handle funds received confirmation
 	if (action.action_id === "confirm_funds_received") {
 		const requestId = action.value;
@@ -108,11 +109,7 @@ async function handleOrderStatus(payload, comment, action, context) {
 	}
 	//!********************************
 	// If it's a rejection, open a modal to collect rejection reason instead of immediate update
-	if (action.action_id === "reject_order") {
-		paymentId = action.value;
-		console.log("Rejecting order", paymentId);
-		return openRejectionReasonModal(payload, paymentId);
-	} else if (action === "accept") {
+	if (action === "accept") {
 		console.log("accept order", action);
 		const metadata = JSON.parse(payload.view.private_metadata); // Parse the metadata
 		paymentId = metadata.paymentId;
@@ -163,13 +160,15 @@ async function handleOrderStatus(payload, comment, action, context) {
 	const updatedStatus = "Validé";
 
 	const validatedBy = payload.user.username;
-	context.log("validatedBy", validatedBy);
+	console.log("validatedBy", validatedBy);
 	const updatedOrder = await Order.findOneAndUpdate(
 		{ id_commande: paymentId },
 		{
 			$set: {
 				statut: updatedStatus,
 				autorisation_admin: true,
+				validatedAt: new Date(),
+				validatedBy: payload.user.id,
 				validatedBy: validatedBy,
 			},
 		},
@@ -177,7 +176,6 @@ async function handleOrderStatus(payload, comment, action, context) {
 	);
 
 	if (!updatedOrder) {
-		context.log("Commande non trouvée:", paymentId);
 		return createSlackResponse(404, "Commande non trouvée");
 	}
 	// Update the original Slack message to remove buttons
@@ -217,7 +215,210 @@ async function handleOrderStatus(payload, comment, action, context) {
 
 	return { response_action: "clear" };
 }
+// async function handleOrderStatus(payload, action, context) {
+//   console.log("** handleOrderStatus");
+//   console.log("payload", payload);
+//   console.log("action", action);
 
+//   let paymentId;
+//   // Handle funds received confirmation
+//   if (action.action_id === "confirm_funds_received") {
+//     const requestId = action.value;
+//     const caisse = await Caisse.findOne({
+//       "fundingRequests.requestId": requestId,
+//     });
+
+//     if (!caisse) {
+//       await postSlackMessageWithRetry(
+//         "https://slack.com/api/chat.postEphemeral",
+//         {
+//           channel: payload.channel.id,
+//           user: payload.user.id,
+//           text: "Erreur: Caisse non trouvée",
+//         },
+//         process.env.SLACK_BOT_TOKEN
+//       );
+//       return createSlackResponse(200, "");
+//     }
+
+//     const requestIndex = caisse.fundingRequests.findIndex(
+//       (r) => r.requestId === requestId
+//     );
+//     if (requestIndex === -1) {
+//       await postSlackMessageWithRetry(
+//         "https://slack.com/api/chat.postEphemeral",
+//         {
+//           channel: payload.channel.id,
+//           user: payload.user.id,
+//           text: "Erreur: Demande non trouvée",
+//         },
+//         process.env.SLACK_BOT_TOKEN
+//       );
+//       return createSlackResponse(200, "");
+//     }
+
+//     caisse.fundingRequests[requestIndex].fundsReceived = true;
+//     caisse.fundingRequests[requestIndex].receivedBy = payload.user.id;
+//     caisse.fundingRequests[requestIndex].receivedAt = new Date();
+
+//     await caisse.save();
+//     await syncCaisseToExcel(caisse);
+
+//     // Update the message to show confirmation
+//     await postSlackMessageWithRetry(
+//       "https://slack.com/api/chat.update",
+//       {
+//         channel: payload.channel.id,
+//         ts: payload.message.ts,
+//         blocks: [
+//           {
+//             type: "section",
+//             text: {
+//               type: "mrkdwn",
+//               text: `✅ Réception des fonds confirmée pour la demande *${requestId}*`,
+//             },
+//           },
+//           {
+//             type: "context",
+//             elements: [
+//               {
+//                 type: "mrkdwn",
+//                 text: `Confirmé par <@${
+//                   payload.user.id
+//                 }> le ${new Date().toLocaleDateString()}`,
+//               },
+//             ],
+//           },
+//         ],
+//         text: `Réception des fonds confirmée pour ${requestId}`,
+//       },
+//       process.env.SLACK_BOT_TOKEN
+//     );
+
+//     // Notify admin
+//     await postSlackMessageWithRetry(
+//       "https://slack.com/api/chat.postMessage",
+//       {
+//         channel: process.env.SLACK_ADMIN_ID,
+//         text: `✅ <@${payload.user.id}> a confirmé la réception des fonds pour la demande ${requestId}`,
+//       },
+//       process.env.SLACK_BOT_TOKEN
+//     );
+
+//     return createSlackResponse(200, "");
+//   }
+//   //!********************************
+//   // If it's a rejection, open a modal to collect rejection reason instead of immediate update
+//   if (action.action_id === "reject_order") {
+    
+//     paymentId = action.value;
+//     console.log("Rejecting order", paymentId);
+//     return openRejectionReasonModal(payload, paymentId);
+//   } else if (action === "accept") {
+//     console.log("accept order", action);
+//     const metadata = JSON.parse(payload.view.private_metadata); // Parse the metadata
+//     paymentId = metadata.paymentId;
+//     console.log("orderId", paymentId);
+//   }
+//   if (
+//     payload.type === "view_submission" &&
+//     payload.view.callback_id === "rejection_reason_modal"
+//   ) {
+    
+//     // Immediate response to close modal
+//     context.res = {
+//       status: 200,
+//       headers: { "Content-Type": "application/json" },
+//       body: JSON.stringify({ response_action: "clear" }),
+//     };
+//     await postSlackMessage(
+//       "https://slack.com/api/chat.postMessage",
+//       {
+//         channel: process.env.SLACK_ADMIN_ID,
+//         text: "⌛ Commande en cours de traitement... Vous serez notifié(e) bientôt !",
+//       },
+//       process.env.SLACK_BOT_TOKEN
+//     );
+//     // Process in background
+//     setImmediate(async () => {
+//       return await handleRejectionReasonSubmission(payload, context);
+//     });
+
+//     return context.res;
+//   }
+//   if (
+//     payload.type === "view_submission" &&
+//     payload.view.callback_id === "payment_modification_modal"
+//   ) {
+//     console.log("3333");
+
+//     // Handle the form submission
+//     await handlePaymentModificationSubmission(payload, context);
+
+//     // Return empty 200 response to close the modal
+//     context.res = {
+//       status: 200,
+//       body: "",
+//     };
+//   }
+//   // For acceptance, proceed as before
+//   const updatedStatus = "Validé";
+
+//   const validatedBy = payload.user.username;
+//   context.log("validatedBy", validatedBy);
+//   const updatedOrder = await Order.findOneAndUpdate(
+//     { id_commande: paymentId },
+//     {
+//       $set: {
+//         statut: updatedStatus,
+//         autorisation_admin: true,
+//         validatedBy: validatedBy,
+//       },
+//     },
+//     { new: true }
+//   );
+
+//   if (!updatedOrder) {
+//     context.log("Commande non trouvée:", paymentId);
+//     return createSlackResponse(404, "Commande non trouvée");
+//   }
+//   // Update the original Slack message to remove buttons
+//   await updateSlackMessage1(payload, paymentId, updatedStatus);
+//   // await notifyRequester(updatedOrder, updatedStatus);
+//   const blocks = [
+//     {
+//       type: "section",
+//       text: {
+//         type: "mrkdwn",
+//         text: `Bonjour <@${updatedOrder.demandeur}>, votre commande *${updatedOrder.id_commande}* est *${updatedStatus}*.`,
+//       },
+//     },
+//     ...(updatedOrder.rejection_reason
+//       ? [
+//           {
+//             type: "section",
+//             text: {
+//               type: "mrkdwn",
+//               text: `*Motif du rejet:*\n${updatedOrder.rejection_reason}`,
+//             },
+//           },
+//         ]
+//       : []),
+//   ];
+//   await postSlackMessageWithRetry(
+//     "https://slack.com/api/chat.postMessage",
+//     {
+//       channel: updatedOrder.demandeur,
+//       text: `Commande *${updatedOrder.id_commande}* rejetée`,
+//       blocks,
+//     },
+//     process.env.SLACK_BOT_TOKEN,
+//     context
+//   );
+//   await notifyTeams(payload, updatedOrder, context);
+
+//   return { response_action: "clear" };
+// }
 async function handlePaymentModificationSubmission(payload, context) {
 	console.log("** handlePaymentModificationSubmission");
 	console.log(
@@ -543,8 +744,11 @@ async function handleRejectionReasonSubmission(payload, context) {
 				{ id_commande: entityId },
 				{
 					$set: {
+						
+						
 						statut: "Rejeté",
 						rejection_reason: rejectionReason,
+						validatedBy: payload.user.id,
 						autorisation_admin: false,
 					},
 				},
@@ -918,4 +1122,5 @@ module.exports = {
 	reopenOrder,
 	updateSlackMessage1,
 	handleRejectionReasonSubmission, // Export the new function
+	openRejectionReasonModal,
 };

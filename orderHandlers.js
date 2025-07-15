@@ -59,6 +59,10 @@ const {
 } = require("./orderUtils");
 const axios = require("axios");
 const querystring = require("querystring");
+const {
+	checkPaymentRequestApprovalDelays,
+	checkPendingPaymentRequestDelays,
+} = require("./handledelayPayment");
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
 });
@@ -1020,7 +1024,6 @@ async function handleOrderSlackApi(request, context) {
 									emoji: true,
 								},
 								blocks: [
-									
 									{
 										type: "input",
 										block_id: "from_caisse_block",
@@ -2426,9 +2429,13 @@ async function handleOrderSlackApi(request, context) {
 				});
 			}
 			if (text.trim() === "check-delays") {
-				await checkPendingOrderDelays();
-				await checkPaymentDelays();
+				console.log("** check-delays");
+				// await checkPendingOrderDelays();
+				// await checkPaymentDelays();
 				await checkProformaDelays();
+				// await checkPendingPaymentRequestDelays(context);
+				// await checkPaymentRequestApprovalDelays(context);
+
 				return createSlackResponse(200, "Delay check completed!");
 			}
 

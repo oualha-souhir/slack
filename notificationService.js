@@ -253,6 +253,15 @@ async function notifyPaymentRequest(
 			process.env.SLACK_BOT_TOKEN,
 			context
 		);
+		await PaymentRequest.findOneAndUpdate(
+			{ id_paiement: paymentRequest.id_paiement },
+			{
+				adminMessage: {
+					ts: adminResponse.ts,
+					createdAt: new Date(),
+				},
+			}
+		);
 		if (!adminResponse.ok)
 			throw new Error(`Admin notification failed: ${adminResponse.error}`);
 
@@ -775,7 +784,9 @@ async function getPaymentBlocks(
 	entity,
 	paymentData,
 	remainingAmount,
-	paymentStatus
+	paymentStatus,
+	paymentNumber,
+	decaissementNumber
 ) {
 	console.log("** getPaymentBlocks");
 	//console.log("entity111",entity);
@@ -941,6 +952,7 @@ async function getPaymentBlocks(
 			}
 		});
 	}
+	console.log("paymentStatus ùùùù", paymentStatus);
 	return [
 		{
 			type: "header",
@@ -948,7 +960,7 @@ async function getPaymentBlocks(
 				type: "plain_text",
 				text: `✅ 💲 Paiement Enregistré: ${
 					entity.id_commande || entity.id_paiement
-				}`,
+				} - ${paymentStatus}`,
 				emoji: true,
 			},
 		},
@@ -1002,9 +1014,43 @@ async function getPaymentBlocks(
 			type: "section",
 			fields: [
 				{ type: "mrkdwn", text: `*Mode de paiement:*\n${paymentData.mode}` },
-				{ type: "mrkdwn", text: `*Statut de paiement:*\n${paymentStatus}` },
+				{
+					type: "mrkdwn",
+					text: `*Numéro de transaction*\n\`${
+						paymentData.paymentNumber || "N/A"
+					}\``,
+				},
 			],
 		},
+		// In getPaymentBlocks, replace the "Numéro de paiement" section with a more visually appealing layout
+
+		{
+			type: "section",
+			fields: [
+				{
+					type: "mrkdwn",
+					text: `*Comptabilisation:* ${
+						paymentData.decaissementNumber ? `*Oui*` : "*Non*"
+					}`,
+				},
+				// Ajout conditionnel correct d'un champ supplémentaire
+				...(paymentData.decaissementNumber
+					? [
+							{
+								type: "mrkdwn",
+								text: `*Numéro de pièce de caisse:* \`${paymentData.decaissementNumber}\``,
+							},
+					  ]
+					: []),
+			],
+		},
+		// {
+		// 	type: "section",
+		// 	fields: [
+		// 		{ type: "mrkdwn", text: `*Statut de paiement:*\n${paymentStatus}` },
+		// 	],
+		// },
+
 		...(additionalDetails.length > 0
 			? [
 					{
@@ -1022,7 +1068,7 @@ async function getPaymentBlocks(
 			  ]
 			: []),
 		{ type: "divider" },
-		{ type: "section", text: { type: "mrkdwn", text: `*Justificatif(s)*` } },
+		// { type: "section", text: { type: "mrkdwn", text: `*Justificatif(s)*` } },
 
 		// ...(paymentData.proofs && paymentData.proofs.length > 0
 		//   ? [
@@ -1192,13 +1238,19 @@ async function notifyPayment(
 	target,
 	userId,
 	targetChannelId,
-	selectedCaisseId
+	selectedCaisseId,
+	paymentNumber,
+	decaissementNumber
 ) {
 	console.log("** notifyPayment");
 	console.log("target", target);
 	const entity = await fetchEntity(entityId, context);
 	console.log("userId", userId);
-
+	console.log("pppp targetChannelId", targetChannelId);
+	console.log("pppp selectedCaisseId", selectedCaisseId);
+	const caisse = selectedCaisseId
+		? await Caisse.findById(selectedCaisseId)
+		: null;
 	const validatedBy = entityId.validatedBy || "unknown";
 	if (!entity) return;
 
@@ -1206,7 +1258,10 @@ async function notifyPayment(
 		entity,
 		notifyPaymentData,
 		remainingAmount,
-		paymentStatus
+		paymentStatus,
+		selectedCaisseId,
+		paymentNumber,
+		decaissementNumber
 	);
 	console.log("FIN getPaymentBlocks");
 	console.log(" targetChannelId", targetChannelId);
@@ -1333,7 +1388,49 @@ async function notifyPayment(
 			},
 		],
 	});
+	if (caisse && caisse.balances) {
+		blocks.push({
+			type: "context",
+			elements: [
+				{
+					type: "mrkdwn",
+					text: `Caisse: *${caisse.type}* - Soldes actuels: XOF: *${caisse.balances.XOF}*, USD: *${caisse.balances.USD}*, EUR: *${caisse.balances.EUR}*`,
+				},
+			],
+		});
+	}
+	let financeMsgTs, financeMsgChannel;
+	if (entity.financeMessageTransfer && entity.financeMessageTransfer.ts) {
+		console.log("==: Transfer");
+		console.log(
+			"entity.financeMessageTransfer.ts",
+			entity.financeMessageTransfer
+		);
+		financeMsgTs = entity.financeMessageTransfer.ts;
+		financeMsgChannel = process.env.SLACK_FINANCE_CHANNEL_ID;
+	} else if (entity.financeMessage && entity.financeMessage.ts) {
+		console.log("==: Finance Message");
+		console.log("entity.financeMessage.ts", entity.financeMessage);
+		financeMsgTs = entity.financeMessage.ts;
+		financeMsgChannel = process.env.SLACK_FINANCE_CHANNEL_ID;
+	}
 
+	if (financeMsgTs && financeMsgChannel) {
+		// Slack message links require removing the dot from ts
+		const slackMsgLink = `https://slack.com/archives/${financeMsgChannel}/p${financeMsgTs.replace(
+			".",
+			""
+		)}`;
+		blocks.push({
+			type: "context",
+			elements: [
+				{
+					type: "mrkdwn",
+					text: `🔗 <${slackMsgLink}|Voir le message original>`,
+				},
+			],
+		});
+	}
 	const response = await postSlackMessageWithRetry(
 		"https://slack.com/api/chat.postMessage",
 		{ channel, text, blocks },
@@ -1345,26 +1442,6 @@ async function notifyPayment(
 		console.error(
 			`❌ Failed to notify ${target} about payment for ${entityId}: ${response.error}`
 		);
-		// const response1 = await postSlackMessageWithRetry(
-		//   "https://slack.com/api/chat.postMessage",
-		//   {
-		//     channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-		//     text:       `❌ Failed to notify ${target} about payment for ${entityId}: ${response.error}`        ,
-		//     blocks: [
-		//       {
-		//         type: "context",
-		//         elements: [
-		//           {
-		//             type: "mrkdwn",
-		//             text: `*Détails:* ${response.error || "Aucun détail fourni"}`,
-		//           },
-		//         ],
-		//       },
-		//     ],
-		//   },
-		//   process.env.SLACK_BOT_TOKEN
-		// );
-		console.log("1Slack API response:", response1);
 	}
 
 	console.log(`${target} notified about payment for ${entityId}`);
@@ -1422,7 +1499,16 @@ async function notifyTeams(payload, comment, order, context) {
 		order.date_requete || new Date(order.date).toISOString().split("T")[0];
 	const validatedBy = payload.user.id;
 	console.log("validatedBy1", validatedBy);
-
+	let selectedCaisseId;
+	if (selectedCaisseId == null) {
+		// Try to find the caisse with type = "Centrale"
+		const centraleCaisse = await Caisse.findOne({ type: "Centrale" });
+		if (centraleCaisse) {
+			selectedCaisseId = centraleCaisse._id.toString();
+		} else {
+			selectedCaisseId = "6848a25fe472b1c054fef321";
+		}
+	}
 	const channel =
 		order.proformas.length === 0
 			? process.env.SLACK_ACHAT_CHANNEL_ID
@@ -1437,6 +1523,7 @@ async function notifyTeams(payload, comment, order, context) {
 	// const productPhotoBlocks = generateProductPhotosBlocks(order.productPhotos);
 	const validatedProforma = order.proformas.find((p) => p.validated === true);
 	// const validationComment = validatedProforma?.validationComment;
+	const availableCaisses = await Caisse.find({}).exec();
 
 	const blocks =
 		order.proformas.length === 0
@@ -1508,6 +1595,23 @@ async function notifyTeams(payload, comment, order, context) {
 					...getOrderBlocks(order, requestDate),
 					// ...productPhotoBlocks,
 					...getProformaBlocks1(order),
+					// {
+					// 	type: "actions",
+					// 	elements: [
+					// 		{
+					// 			type: "button",
+					// 			text: {
+					// 				type: "plain_text",
+					// 				text: "Enregistrer paiement",
+					// 				emoji: true,
+					// 			},
+					// 			style: "primary",
+					// 			action_id: "finance_payment_form",
+					// 			value: order.id_commande,
+					// 		},
+					// 	],
+					// },
+					// ...inside notifyTeams, in the blocks array...
 					{
 						type: "actions",
 						elements: [
@@ -1521,6 +1625,33 @@ async function notifyTeams(payload, comment, order, context) {
 								style: "primary",
 								action_id: "finance_payment_form",
 								value: order.id_commande,
+							},
+							{
+								type: "static_select",
+								placeholder: {
+									type: "plain_text",
+									text: "Affecter la transaction",
+									emoji: true,
+								},
+								action_id: "transfer_to_caisse",
+								options: availableCaisses
+									.filter(
+										(caisse) =>
+											caisse._id.toString() !== selectedCaisseId
+									)
+									.map((caisse) => ({
+										text: {
+											type: "plain_text",
+											text: `${caisse.type} (${caisse.channelName})`,
+											emoji: true,
+										},
+										value: JSON.stringify({
+											entityId: order.id_commande,
+											fromCaisseId: selectedCaisseId,
+											toCaisseId: caisse._id.toString(),
+											toChannelId: caisse.channelId,
+										}),
+									})),
 							},
 						],
 					},

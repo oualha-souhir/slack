@@ -13,7 +13,10 @@ const { Order } = require("./db");
 const { notifyUserAI } = require("./notificationService");
 const { createSlackResponse } = require("./utils");
 const { OpenAI } = require("openai");
-const { setupPaymentRequestDelayMonitoring } = require("./handledelayPayment.js");
+const {
+	checkPaymentRequestApprovalDelays,
+	checkPendingPaymentRequestDelays,
+} = require("./handledelayPayment.js");
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
 });
@@ -28,7 +31,7 @@ app.http("orderSlackApi", {
 			// setupDelayMonitoring();
 			// setupReporting(context);
 			console.log("⚡ Order Management System is running!");
-			
+
 			return await handleOrderSlackApi(request, context);
 		} catch (error) {
 			context.log(`❌ Erreur interne : ${error}`);
@@ -55,17 +58,16 @@ if (process.env.NODE_ENV === "production") {
 	console.log("🚀 Production environment detected - registering timers");
 
 	app.timer("delayMonitoring", {
-		// schedule: "*/3 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
 
-		schedule: "0 0 * * * *", // Every hour at :00 (e.g., 12:00, 1:00)
+		schedule: "0 0 9 * * *", // Every day at 9:00 AM
 		handler: async (timer, context) => {
-			context.log("Running delay monitoring1111");
+			context.log("Running delay monitoring");
 
 			await checkPendingOrderDelays(context);
 			await checkPaymentDelays(context);
 			await checkProformaDelays(context);
-			await setupPaymentRequestDelayMonitoring(context);
-			context.log("Running delay monitoringéééé");
+			await checkPendingPaymentRequestDelays(context);
+			await checkPaymentRequestApprovalDelays(context);
 
 			context.log("Delay monitoring completed");
 		},

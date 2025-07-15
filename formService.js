@@ -9,6 +9,7 @@ const {
 } = require("./caisseService");
 const { generateFundingRequestForm } = require("./caisseService");
 const { WebClient } = require("@slack/web-api");
+const { openRejectionReasonModal } = require("./orderStatusService");
 
 const {
 	generateOrderForm,
@@ -30,6 +31,8 @@ const {
 	getOrderBlocks,
 	notifyTeams,
 	postSlackMessageWithRetry,
+	getPaymentRequestBlocks,
+	getProformaBlocks1,
 } = require("./notificationService");
 const { getFournisseurOptions } = require("./config");
 
@@ -2589,6 +2592,7 @@ async function executeOrderDeletion(payload, metadata, reason, context) {
 
 		// Update order using findOneAndUpdate
 		const updateData = {
+			statut: "Supprimée",
 			deleted: true,
 			deletedAt: new Date(),
 			deletedBy: payload.user ? payload.user.id : payload.user_id || "unknown",
@@ -2720,7 +2724,51 @@ async function executeOrderDeletion(payload, metadata, reason, context) {
 				process.env.SLACK_BOT_TOKEN
 			);
 		}
-
+		// ...existing code...
+		// ...existing code...
+		const messageFields = ["achatMessage", "financeMessage", "adminMessage"];
+		for (const field of messageFields) {
+			const msg = order[field];
+			if (msg && msg.ts && msg.ts.length > 0) {
+				try {
+					await postSlackMessage(
+						"https://slack.com/api/chat.update",
+						{
+							channel:
+								process.env[
+									`SLACK_${field
+										.replace("Message", "")
+										.toUpperCase()}_CHANNEL_ID`
+								] || msg.channel,
+							ts: msg.ts,
+							text: `❌ *SUPPRIMÉE* - Commande #${orderId}`,
+							blocks: [
+								{
+									type: "header",
+									text: {
+										type: "plain_text",
+										text:
+											":package:  ❌ Commande: " +
+											orderId +
+											" - Supprimée" +
+											` par <@${
+												payload.user.username
+											}> le ${new Date().toLocaleDateString()}, Raison:` +
+											(reason ? ` ${reason}` : " Non spécifiée"),
+										emoji: true,
+									},
+								},
+							],
+						},
+						process.env.SLACK_BOT_TOKEN
+					);
+				} catch (err) {
+					console.error(`Failed to update ${field}:`, err);
+				}
+			}
+		}
+		// ...existing code...
+		// ...existing code...
 		return {
 			success: true,
 			message: `:white_check_mark: Commande #${orderId} supprimée avec succès.`,
@@ -2986,25 +3034,40 @@ async function generateFundingApprovalPaymentModal(
 	}
 }
 // Handler for radio button selection - this will be called when user selects a payment method
-async function handlePaymentMethodSelection1(body) {
-	const { view, actions } = body;
+async function handlePaymentMethodSelection1(payload, context) {
+	console.log("** handlePaymentMethodSelection1");
+	const { view, actions } = payload;
 	const selectedValue = actions[0].selected_option.value;
+	console.log("selectedValue", selectedValue);
 	const client = new WebClient(process.env.SLACK_BOT_TOKEN);
 
 	// Parse the existing metadata
 	const metadata = JSON.parse(view.private_metadata);
 
 	// Update the modal with the new selection
-	const updatedView = await createPaymentConfirmationModal(
-		metadata.paymentId,
-		metadata.action === "accept",
-		metadata.message_ts,
-		selectedValue
-	);
+	// const updatedView = await createPaymentConfirmationModal(
+	// 	metadata.paymentId,
+	// 	metadata.action === "accept",
+	// 	metadata.message_ts,
+	// 	selectedValue
+	// );
 
+	const orderId = metadata.orderId; // This will be "PAY/2025/07/0078"
+
+	console.log("Order ID:", orderId);
+	console.log("payload.actions[0]", payload.actions[0]);
+	console.log("** payment_method_selection");
+	const updatedView = await generatePaymentForm({
+		payload,
+		action: payload.actions[0],
+		context,
+		selectedPaymentMode: selectedValue,
+		orderId,
+		selectedCaisseId: null,
+	});
 	// Update the modal view
 	await client.views.update({
-		view_id: body.view.id,
+		view_id: payload.view.id,
 		view: updatedView,
 	});
 }
@@ -4909,26 +4972,21 @@ async function handlePaymentFormModeSelection(payload, context) {
 						{
 							text: {
 								type: "plain_text",
-								text: "Oui - Générer un numéro de décaissement",
+								text: "Oui - Générer un numéro de pièce de caisse",
 							},
 							value: "yes",
 						},
 						{
 							text: {
 								type: "plain_text",
-								text: "Non - Numéro générique uniquement",
+								text: "Non",
 							},
 							value: "no",
 						},
 					],
-					initial_option: {
-						text: {
-							type: "plain_text",
-							text: "Oui - Générer un numéro de décaissement",
-						},
-						value: "yes",
-					},
+					// No initial_option here
 				},
+				optional: false, // This makes the field required
 			}
 		);
 	} else if (selectedValue === "Julaya") {
@@ -4990,26 +5048,21 @@ async function handlePaymentFormModeSelection(payload, context) {
 						{
 							text: {
 								type: "plain_text",
-								text: "Oui - Générer un numéro de décaissement",
+								text: "Oui - Générer un numéro de pièce de caisse",
 							},
 							value: "yes",
 						},
 						{
 							text: {
 								type: "plain_text",
-								text: "Non - Numéro générique uniquement",
+								text: "Non",
 							},
 							value: "no",
 						},
 					],
-					initial_option: {
-						text: {
-							type: "plain_text",
-							text: "Oui - Générer un numéro de décaissement",
-						},
-						value: "yes",
-					},
+					// No initial_option here
 				},
+				optional: false, // This makes the field required
 			}
 		);
 	}
@@ -5095,7 +5148,7 @@ async function createPaymentConfirmationModal(
 	const view = {
 		type: "modal",
 		callback_id: "payment_verif_confirm",
-		title: { type: "plain_text", text: "Confirmation de paiement" },
+		title: { type: "plain_text", text: "Confirmation" },
 		submit: { type: "plain_text", text: "Confirmer" },
 		close: { type: "plain_text", text: "Annuler" },
 		blocks: [
@@ -5108,72 +5161,7 @@ async function createPaymentConfirmationModal(
 					} cette demande ?`,
 				},
 			},
-			// Only show payment method selection for payment requests (PAY/), not orders (CMD/)
-			...(isAccept && isPaymentRequest
-				? [
-						{
-							type: "divider",
-						},
-						{
-							type: "section",
-							text: {
-								type: "mrkdwn",
-								text: "*Sélectionnez le mode de paiement :*",
-							},
-						},
-						{
-							type: "actions",
-							elements: [
-								{
-									type: "radio_buttons",
-									action_id: "payment_method_selection",
-									initial_option: selectedPaymentMethod
-										? {
-												text: {
-													type: "plain_text",
-													text:
-														selectedPaymentMethod === "caisse_transfer"
-															? "Transfert Caisse"
-															: "Autre méthode",
-												},
-												value: selectedPaymentMethod,
-										  }
-										: undefined,
-									options: [
-										{
-											text: {
-												type: "plain_text",
-												text: "Transfert Caisse",
-											},
-											value: "caisse_transfer",
-										},
-									],
-								},
-							],
-						},
-						// Only show caisse selection if "Transfert Caisse" is selected
-						...(selectedPaymentMethod === "caisse_transfer"
-							? [
-									{
-										type: "section",
-										text: {
-											type: "mrkdwn",
-											text: "*Sélectionnez le type de caisse :*",
-										},
-										accessory: {
-											type: "static_select",
-											placeholder: {
-												type: "plain_text",
-												text: "Choisir une caisse",
-											},
-											action_id: "caisse_selection",
-											options: caisseOptions,
-										},
-									},
-							  ]
-							: []),
-				  ]
-				: []),
+
 			{
 				type: "input",
 				block_id: "validation_data",
@@ -5203,17 +5191,17 @@ async function createPaymentConfirmationModal(
 // Add these handlers for transfer approval/rejection
 // async function handleApproveTransfer(payload, context) {
 //     console.log("** handleApproveTransfer");
-    
+
 //     try {
 //         const transferId = payload.actions[0].value;
 //         const userId = payload.user.id;
 //         const userName = payload.user.username;
-        
+
 //         // Find the caisse containing the transfer request
 //         const caisse = await Caisse.findOne({
 //             "transferRequests.transferId": transferId,
 //         });
-        
+
 //         if (!caisse) {
 //             console.error(`Caisse not found for transfer ${transferId}`);
 //             return createSlackResponse(200, {
@@ -5225,7 +5213,7 @@ async function createPaymentConfirmationModal(
 //         const transferIndex = caisse.transferRequests.findIndex(
 //             (r) => r.transferId === transferId
 //         );
-        
+
 //         if (transferIndex === -1) {
 //             console.error(`Transfer ${transferId} not found`);
 //             return createSlackResponse(200, {
@@ -5234,7 +5222,7 @@ async function createPaymentConfirmationModal(
 //         }
 
 //         const transferRequest = caisse.transferRequests[transferIndex];
-        
+
 //         // Check if already processed
 //         if (transferRequest.status !== "En attente") {
 //             return createSlackResponse(200, {
@@ -5518,17 +5506,17 @@ async function createPaymentConfirmationModal(
 
 // async function handleRejectTransfer(payload, context) {
 //     console.log("** handleRejectTransfer");
-    
+
 //     try {
 //         const transferId = payload.actions[0].value;
 //         const userId = payload.user.id;
 //         const userName = payload.user.username;
-        
+
 //         // Find the caisse containing the transfer request
 //         const caisse = await Caisse.findOne({
 //             "transferRequests.transferId": transferId,
 //         });
-        
+
 //         if (!caisse) {
 //             console.error(`Caisse not found for transfer ${transferId}`);
 //             return createSlackResponse(200, {
@@ -5540,7 +5528,7 @@ async function createPaymentConfirmationModal(
 //         const transferIndex = caisse.transferRequests.findIndex(
 //             (r) => r.transferId === transferId
 //         );
-        
+
 //         if (transferIndex === -1) {
 //             console.error(`Transfer ${transferId} not found`);
 //             return createSlackResponse(200, {
@@ -5549,7 +5537,7 @@ async function createPaymentConfirmationModal(
 //         }
 
 //         const transferRequest = caisse.transferRequests[transferIndex];
-        
+
 //         // Check if already processed
 //         if (transferRequest.status !== "En attente") {
 //             return createSlackResponse(200, {
@@ -5725,229 +5713,843 @@ async function createPaymentConfirmationModal(
 
 // Function to open approval confirmation modal
 async function openTransferApprovalConfirmation(payload, context) {
-    console.log("** openTransferApprovalConfirmation");
-    
-    try {
-        const transferId = payload.actions[0].value;
-        
-        // Find the caisse containing the transfer request to show details
-        const caisse = await Caisse.findOne({
-            "transferRequests.transferId": transferId,
-        });
-        
-        if (!caisse) {
-            console.error(`Caisse not found for transfer ${transferId}`);
-            return createSlackResponse(200, {
-                text: "❌ Demande de transfert introuvable",
-            });
-        }
+	console.log("** openTransferApprovalConfirmation");
 
-        const transferRequest = caisse.transferRequests.find(
-            (r) => r.transferId === transferId
-        );
-        
-        if (!transferRequest) {
-            console.error(`Transfer ${transferId} not found`);
-            return createSlackResponse(200, {
-                text: "❌ Demande de transfert introuvable",
-            });
-        }
+	try {
+		const transferId = payload.actions[0].value;
 
-        // Get caisse details for display
-        const fromCaisse = await Caisse.findOne({ channelId: transferRequest.fromCaisse });
-        const toCaisse = await Caisse.findOne({ channelId: transferRequest.toCaisse });
+		// Find the caisse containing the transfer request to show details
+		const caisse = await Caisse.findOne({
+			"transferRequests.transferId": transferId,
+		});
 
-        const view = {
-            type: "modal",
-            callback_id: "transfer_approval_confirmation",
-            title: {
-                type: "plain_text",
-                text: "Confirmer l'approbation",
-                emoji: true,
-            },
-            submit: {
-                type: "plain_text",
-                text: "Approuver",
-                emoji: true,
-            },
-            close: {
-                type: "plain_text",
-                text: "Annuler",
-                emoji: true,
-            },
-            blocks: [
-                {
-                    type: "section",
-                    text: {
-                        type: "mrkdwn",
-                        text: `⚠️ *Êtes-vous sûr de vouloir approuver ce transfert ?*`,
-                    },
-                },
-                
-                {
-                    type: "context",
-                    elements: [
-                        {
-                            type: "mrkdwn",
-                            text: `Solde source actuel: ${fromCaisse?.balances[transferRequest.currency] || 0} ${transferRequest.currency}`,
-                        },
-                    ],
-                },
-                {
-                    type: "input",
-                    block_id: "approval_comment_block",
-                    optional: true,
-                    label: {
-                        type: "plain_text",
-                        text: "Commentaire",
-                        emoji: true,
-                    },
-                    element: {
-                        type: "plain_text_input",
-                        action_id: "approval_comment_input",
-                        multiline: true,
-                        placeholder: {
-                            type: "plain_text",
-                            text: "Ajouter un commentaire pour cette approbation...",
-                        },
-                    },
-                },
-            ],
-            private_metadata: JSON.stringify({
-                transferId: transferId,
-                channelId: payload.channel.id,
-                messageTs: payload.message.ts,
-            }),
-        };
+		if (!caisse) {
+			console.error(`Caisse not found for transfer ${transferId}`);
+			return createSlackResponse(200, {
+				text: "❌ Demande de transfert introuvable",
+			});
+		}
 
-        const response = await postSlackMessage2(
-            "https://slack.com/api/views.open",
-            { trigger_id: payload.trigger_id, view },
-            process.env.SLACK_BOT_TOKEN
-        );
+		const transferRequest = caisse.transferRequests.find(
+			(r) => r.transferId === transferId
+		);
 
-        if (!response.data.ok) {
-            throw new Error(`Slack API error: ${response.data.error}`);
-        }
+		if (!transferRequest) {
+			console.error(`Transfer ${transferId} not found`);
+			return createSlackResponse(200, {
+				text: "❌ Demande de transfert introuvable",
+			});
+		}
 
-        return createSlackResponse(200, "");
+		// Get caisse details for display
+		const fromCaisse = await Caisse.findOne({
+			channelId: transferRequest.fromCaisse,
+		});
+		const toCaisse = await Caisse.findOne({
+			channelId: transferRequest.toCaisse,
+		});
 
-    } catch (error) {
-        console.error("Error opening transfer approval confirmation:", error.message);
-        return createSlackResponse(200, {
-            text: `❌ Erreur lors de l'ouverture de la confirmation: ${error.message}`,
-        });
-    }
+		const view = {
+			type: "modal",
+			callback_id: "transfer_approval_confirmation",
+			title: {
+				type: "plain_text",
+				text: "Confirmer l'approbation",
+				emoji: true,
+			},
+			submit: {
+				type: "plain_text",
+				text: "Approuver",
+				emoji: true,
+			},
+			close: {
+				type: "plain_text",
+				text: "Annuler",
+				emoji: true,
+			},
+			blocks: [
+				{
+					type: "section",
+					text: {
+						type: "mrkdwn",
+						text: `⚠️ *Êtes-vous sûr de vouloir approuver ce transfert ?*`,
+					},
+				},
+
+				{
+					type: "context",
+					elements: [
+						{
+							type: "mrkdwn",
+							text: `Solde source actuel: ${
+								fromCaisse?.balances[transferRequest.currency] || 0
+							} ${transferRequest.currency}`,
+						},
+					],
+				},
+				{
+					type: "input",
+					block_id: "approval_comment_block",
+					optional: true,
+					label: {
+						type: "plain_text",
+						text: "Commentaire",
+						emoji: true,
+					},
+					element: {
+						type: "plain_text_input",
+						action_id: "approval_comment_input",
+						multiline: true,
+						placeholder: {
+							type: "plain_text",
+							text: "Ajouter un commentaire pour cette approbation...",
+						},
+					},
+				},
+			],
+			private_metadata: JSON.stringify({
+				transferId: transferId,
+				channelId: payload.channel.id,
+				messageTs: payload.message.ts,
+			}),
+		};
+
+		const response = await postSlackMessage2(
+			"https://slack.com/api/views.open",
+			{ trigger_id: payload.trigger_id, view },
+			process.env.SLACK_BOT_TOKEN
+		);
+
+		if (!response.data.ok) {
+			throw new Error(`Slack API error: ${response.data.error}`);
+		}
+
+		return createSlackResponse(200, "");
+	} catch (error) {
+		console.error(
+			"Error opening transfer approval confirmation:",
+			error.message
+		);
+		return createSlackResponse(200, {
+			text: `❌ Erreur lors de l'ouverture de la confirmation: ${error.message}`,
+		});
+	}
 }
 
 // Function to open rejection reason modal
 async function openTransferRejectionReason(payload, context) {
-    console.log("** openTransferRejectionReason");
-    
-    try {
-        const transferId = payload.actions[0].value;
-        
-        // Find the caisse containing the transfer request to show details
-        const caisse = await Caisse.findOne({
-            "transferRequests.transferId": transferId,
-        });
-        
-        if (!caisse) {
-            console.error(`Caisse not found for transfer ${transferId}`);
-            return createSlackResponse(200, {
-                text: "❌ Demande de transfert introuvable",
-            });
-        }
+	console.log("** openTransferRejectionReason");
 
-        const transferRequest = caisse.transferRequests.find(
-            (r) => r.transferId === transferId
-        );
-        
-        if (!transferRequest) {
-            console.error(`Transfer ${transferId} not found`);
-            return createSlackResponse(200, {
-                text: "❌ Demande de transfert introuvable",
-            });
-        }
+	try {
+		const transferId = payload.actions[0].value;
 
-        const view = {
-            type: "modal",
-            callback_id: "transfer_rejection_reason",
-            title: {
-                type: "plain_text",
-                text: "Motif de rejet",
-                emoji: true,
-            },
-            submit: {
-                type: "plain_text",
-                text: "Rejeter",
-                emoji: true,
-            },
-            close: {
-                type: "plain_text",
-                text: "Annuler",
-                emoji: true,
-            },
-            blocks: [
-                {
-                    type: "section",
-                    text: {
-                        type: "mrkdwn",
-                        text: `⚠️ *Êtes-vous sûr de vouloir rejeter ce transfert ?*`,
-                    },
-                },
-                {
-                    type: "divider",
-                },
-                
-                {
-                    type: "input",
-                    block_id: "rejection_reason_block",
-                    label: {
-                        type: "plain_text",
-                        text: "Motif du rejet",
-                        emoji: true,
-                    },
-                    element: {
-                        type: "plain_text_input",
-                        action_id: "rejection_reason_input",
-                        multiline: true,
-                        placeholder: {
-                            type: "plain_text",
-                            text: "Expliquez pourquoi ce transfert est rejeté...",
-                        },
-                    },
-                },
-            ],
-            private_metadata: JSON.stringify({
-                transferId: transferId,
-                channelId: payload.channel.id,
-                messageTs: payload.message.ts,
-            }),
-        };
+		// Find the caisse containing the transfer request to show details
+		const caisse = await Caisse.findOne({
+			"transferRequests.transferId": transferId,
+		});
 
-        const response = await postSlackMessage2(
-            "https://slack.com/api/views.open",
-            { trigger_id: payload.trigger_id, view },
-            process.env.SLACK_BOT_TOKEN
-        );
+		if (!caisse) {
+			console.error(`Caisse not found for transfer ${transferId}`);
+			return createSlackResponse(200, {
+				text: "❌ Demande de transfert introuvable",
+			});
+		}
 
-        if (!response.data.ok) {
-            throw new Error(`Slack API error: ${response.data.error}`);
-        }
+		const transferRequest = caisse.transferRequests.find(
+			(r) => r.transferId === transferId
+		);
 
-        return createSlackResponse(200, "");
+		if (!transferRequest) {
+			console.error(`Transfer ${transferId} not found`);
+			return createSlackResponse(200, {
+				text: "❌ Demande de transfert introuvable",
+			});
+		}
 
-    } catch (error) {
-        console.error("Error opening transfer rejection reason:", error.message);
-        return createSlackResponse(200, {
-            text: `❌ Erreur lors de l'ouverture du formulaire de rejet: ${error.message}`,
-        });
-    }
+		const view = {
+			type: "modal",
+			callback_id: "transfer_rejection_reason",
+			title: {
+				type: "plain_text",
+				text: "Motif de rejet",
+				emoji: true,
+			},
+			submit: {
+				type: "plain_text",
+				text: "Rejeter",
+				emoji: true,
+			},
+			close: {
+				type: "plain_text",
+				text: "Annuler",
+				emoji: true,
+			},
+			blocks: [
+				{
+					type: "section",
+					text: {
+						type: "mrkdwn",
+						text: `⚠️ *Êtes-vous sûr de vouloir rejeter ce transfert ?*`,
+					},
+				},
+				{
+					type: "divider",
+				},
+
+				{
+					type: "input",
+					block_id: "rejection_reason_block",
+					label: {
+						type: "plain_text",
+						text: "Motif du rejet",
+						emoji: true,
+					},
+					element: {
+						type: "plain_text_input",
+						action_id: "rejection_reason_input",
+						multiline: true,
+						placeholder: {
+							type: "plain_text",
+							text: "Expliquez pourquoi ce transfert est rejeté...",
+						},
+					},
+				},
+			],
+			private_metadata: JSON.stringify({
+				transferId: transferId,
+				channelId: payload.channel.id,
+				messageTs: payload.message.ts,
+			}),
+		};
+
+		const response = await postSlackMessage2(
+			"https://slack.com/api/views.open",
+			{ trigger_id: payload.trigger_id, view },
+			process.env.SLACK_BOT_TOKEN
+		);
+
+		if (!response.data.ok) {
+			throw new Error(`Slack API error: ${response.data.error}`);
+		}
+
+		return createSlackResponse(200, "");
+	} catch (error) {
+		console.error("Error opening transfer rejection reason:", error.message);
+		return createSlackResponse(200, {
+			text: `❌ Erreur lors de l'ouverture du formulaire de rejet: ${error.message}`,
+		});
+	}
 }
+// Handler for transfer action - opens confirmation dialog
+const handleTransferToCaisse = async (action, client) => {
+	try {
+		const { entityId, fromCaisseId, toCaisseId, toChannelId } = JSON.parse(
+			action.value
+		);
 
+		// Get caisse information for confirmation dialog
+		const fromCaisse = await Caisse.findById(fromCaisseId);
+		const toCaisse = await Caisse.findById(toCaisseId);
 
+		if (!fromCaisse || !toCaisse) {
+			throw new Error("Caisse not found");
+		}
 
+		// Open confirmation dialog
+		await client.views.open({
+			trigger_id: action.trigger_id,
+			view: {
+				type: "modal",
+				callback_id: "confirm_transfer_modal",
+				title: {
+					type: "plain_text",
+					text: "Confirmer le transfert",
+					emoji: true,
+				},
+				submit: {
+					type: "plain_text",
+					text: "Confirmer",
+					emoji: true,
+				},
+				close: {
+					type: "plain_text",
+					text: "Annuler",
+					emoji: true,
+				},
+				private_metadata: JSON.stringify({
+					entityId,
+					fromCaisseId,
+					toCaisseId,
+					toChannelId,
+					originalChannelId: action.channel.id,
+					originalMessageTs: action.message.ts,
+				}),
+				blocks: [
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `Êtes-vous sûr de vouloir transférer ce paiement ?\n\n*De:* ${fromCaisse.channelName}\n*Vers:* ${toCaisse.channelName}`,
+						},
+					},
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `⚠️ *Attention:* Une fois transféré, le paiement ne pourra plus être traité dans ce channel.`,
+						},
+					},
+				],
+			},
+		});
+	} catch (error) {
+		console.error("Error opening transfer confirmation dialog:", error);
+
+		// Send error message to user
+		await client.chat.postEphemeral({
+			channel: action.channel.id,
+			user: action.user.id,
+			text: `Erreur lors de l'ouverture du dialogue de confirmation: ${error.message}`,
+		});
+	}
+};
+// Handler for transfer action
+// const handleTransferToCaisse = async (action, client) => {
+// 	try {
+// 		const { entityId, fromCaisseId, toCaisseId, toChannelId } = JSON.parse(
+// 			action.value
+// 		);
+
+// 		// Get the payment request
+// 		const paymentRequest = await PaymentRequest.findOne({
+// 			id_paiement: entityId,
+// 		});
+// 		if (!paymentRequest) {
+// 			throw new Error("Payment request not found");
+// 		}
+
+// 		// Get caisse information
+// 		const fromCaisse = await Caisse.findById(fromCaisseId);
+// 		const toCaisse = await Caisse.findById(toCaisseId);
+
+// 		if (!fromCaisse || !toCaisse) {
+// 			throw new Error("Caisse not found");
+// 		}
+
+// 		// Send notification to the new channel without transfer option
+// 		const transferBlocks = getFinancePaymentBlocksForTransfer(
+// 			paymentRequest,
+// 			action.user.id, // The user who initiated the transfer
+// 			toCaisseId,
+// 			fromCaisse.channelName
+// 		);
+
+// 		await client.chat.postMessage({
+// 			channel: toChannelId,
+// 			blocks: transferBlocks,
+// 			text: `Paiement transféré depuis ${fromCaisse.channelName}`,
+// 		});
+// 		// Update the original message to show it was transferred
+// 		await client.chat.update({
+// 			channel: fromCaisse.channelId,
+// 			ts: action.message.ts,
+// 			blocks: getTransferredPaymentBlocks(
+// 				paymentRequest,
+// 				action.user.id, // The user who validated originally
+// 				action.user.id, // The user who transferred
+// 				toCaisse.channelName
+// 			),
+// 		});
+// 		// Update the original message to show it was transferred
+// 		// await client.chat.update({
+// 		// 	channel: fromCaisse.channelId,
+// 		// 	ts: action.message.ts,
+// 		// 	blocks: [
+// 		// 		...action.message.blocks.slice(0, -1), // Remove the actions block
+// 		// 		{
+// 		// 			type: "context",
+// 		// 			elements: [
+// 		// 				{
+// 		// 					type: "mrkdwn",
+// 		// 					text: `✅ Validé par: <@${action.user.id}>`,
+// 		// 				},
+// 		// 				{
+// 		// 					type: "mrkdwn",
+// 		// 					text: `🔄 Transféré vers: ${toCaisse.channelName} par <@${action.user.id}>`,
+// 		// 				},
+// 		// 			],
+// 		// 		},
+// 		// 	],
+// 		// });
+
+// 		console.log(
+// 			`Payment ${entityId} transferred from ${fromCaisse.channelName} to ${toCaisse.channelName}`
+// 		);
+// 	} catch (error) {
+// 		console.error("Error transferring payment:", error);
+
+// 		// Send error message to user
+// 		await client.chat.postEphemeral({
+// 			channel: action.channel.id,
+// 			user: action.user.id,
+// 			text: `Erreur lors du transfert: ${error.message}`,
+// 		});
+// 	}
+// };
+// const getTransferredPaymentBlocks = (
+// 	paymentRequest,
+// 	validatedBy,
+// 	transferredBy,
+// 	toChannelName
+// ) => [
+// 	// Titre and validated by in the same section
+// 	...getPaymentRequestBlocks(paymentRequest, validatedBy),
+// 	{ type: "divider" },
+// 	{
+// 		type: "section",
+// 		text: {
+// 			type: "mrkdwn",
+// 			text: `🔄 *Paiement transféré vers:* ${toChannelName}`,
+// 		},
+// 	},
+// 	// Block context supplémentaire demandé
+// 	{
+// 		type: "context",
+// 		elements: [
+// 			{
+// 				type: "mrkdwn",
+// 				text: `✅ Validé par: <@${validatedBy}> le ${new Date(
+// 					paymentRequest.validatedAt
+// 				).toLocaleString("fr-FR", {
+// 					timeZone: "Europe/Paris",
+// 					day: "2-digit",
+// 					month: "2-digit",
+// 					year: "numeric",
+// 					hour: "2-digit",
+// 					minute: "2-digit",
+// 				})}`,
+// 			},
+// 			{
+// 				type: "mrkdwn",
+// 				text: `🔄 Transaction affecté par <@${transferredBy}> le ${new Date().toLocaleString(
+// 					"fr-FR",
+// 					{
+// 						timeZone: "Europe/Paris",
+// 						day: "2-digit",
+// 						month: "2-digit",
+// 						year: "numeric",
+// 						hour: "2-digit",
+// 						minute: "2-digit",
+// 					}
+// 				)}`,
+// 			},
+// 		],
+// 	},
+// ];
+
+const getTransferredPaymentBlocks = (
+	entity,
+	validatedBy,
+	transferredBy,
+	toChannelName
+) => {
+	// If it's an order
+	if (entity.id_commande) {
+		const requestDate = entity.date_requete || entity.date || new Date();
+		return [
+			...getOrderBlocks(entity, requestDate),
+			// ...productPhotoBlocks,
+			...getProformaBlocks1(entity),
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: `:package: *Commande transférée vers:* ${toChannelName}`,
+				},
+			},
+			{
+				type: "mrkdwn",
+				text: `✅ Validé par: <@${entity.validatedBy}> le ${new Date(
+					entity.validatedAt
+				).toLocaleString("fr-FR", {
+					timeZone: "Europe/Paris",
+					day: "2-digit",
+					month: "2-digit",
+					year: "numeric",
+					hour: "2-digit",
+					minute: "2-digit",
+				})}`,
+			},
+			{
+				type: "context",
+				elements: [
+					{
+						type: "mrkdwn",
+						text: `🔄 Transférée par <@${transferredBy}> le ${new Date().toLocaleString(
+							"fr-FR",
+							{
+								timeZone: "Europe/Paris",
+								day: "2-digit",
+								month: "2-digit",
+								year: "numeric",
+								hour: "2-digit",
+								minute: "2-digit",
+							}
+						)}`,
+					},
+				],
+			},
+		];
+	}
+	// Else, it's a payment request
+	return [
+		...getPaymentRequestBlocks(entity, validatedBy),
+		{ type: "divider" },
+		{
+			type: "section",
+			text: {
+				type: "mrkdwn",
+				text: `🔄 *Paiement transféré vers:* ${toChannelName}`,
+			},
+		},
+		{
+			type: "context",
+			elements: [
+				{
+					type: "mrkdwn",
+					text: `✅ Validé par: <@${validatedBy}> le ${new Date(
+						entity.validatedAt
+					).toLocaleString("fr-FR", {
+						timeZone: "Europe/Paris",
+						day: "2-digit",
+						month: "2-digit",
+						year: "numeric",
+						hour: "2-digit",
+						minute: "2-digit",
+					})}`,
+				},
+				{
+					type: "mrkdwn",
+					text: `🔄 Transaction affecté par <@${transferredBy}> le ${new Date().toLocaleString(
+						"fr-FR",
+						{
+							timeZone: "Europe/Paris",
+							day: "2-digit",
+							month: "2-digit",
+							year: "numeric",
+							hour: "2-digit",
+							minute: "2-digit",
+						}
+					)}`,
+				},
+			],
+		},
+	];
+};
+// ...existing
+// Handler for transfer confirmation
+// ...existing code...
+const handleTransferConfirmation = async (view, client) => {
+	try {
+		const {
+			entityId,
+			fromCaisseId,
+			toCaisseId,
+			toChannelId,
+			originalChannelId,
+			originalMessageTs,
+		} = JSON.parse(view.private_metadata);
+
+		let paymentRequest = null;
+		let order = null;
+		let transferBlocks;
+		let transferredBlocks;
+		let entityType = "";
+
+		// Get caisse information
+		const fromCaisse = await Caisse.findById(fromCaisseId);
+		const toCaisse = await Caisse.findById(toCaisseId);
+
+		if (!fromCaisse || !toCaisse) throw new Error("Caisse not found");
+
+		// Detect entity type and fetch
+		if (entityId.startsWith("PAY/")) {
+			entityType = "payment";
+			paymentRequest = await PaymentRequest.findOne({ id_paiement: entityId });
+			if (!paymentRequest) throw new Error("Payment request not found");
+			transferBlocks = getFinancePaymentBlocksForTransfer(
+				paymentRequest,
+				view.user.id,
+				toCaisseId,
+				fromCaisse.channelName
+			);
+			transferredBlocks = getTransferredPaymentBlocks(
+				paymentRequest,
+				view.user.id,
+				view.user.id,
+				toCaisse.channelName
+			);
+		} else if (entityId.startsWith("CMD/")) {
+			entityType = "order";
+			order = await Order.findOne({ id_commande: entityId });
+			if (!order) throw new Error("Order not found");
+			transferBlocks = getFinancePaymentBlocksForTransfer(
+				order,
+				view.user.id,
+				toCaisseId,
+				fromCaisse.channelName
+			);
+			transferredBlocks = getTransferredPaymentBlocks(
+				order,
+				view.user.id,
+				view.user.id,
+				toCaisse.channelName
+			);
+		} else {
+			throw new Error("Unknown entity type");
+		}
+
+		// Send notification to the new channel
+		const response = await client.chat.postMessage({
+			channel: toChannelId,
+			blocks: transferBlocks,
+			text:
+				entityType === "payment"
+					? `Paiement transféré depuis ${fromCaisse.channelName}`
+					: `Commande transférée depuis ${fromCaisse.channelName}`,
+		});
+
+		// Update entity with transfer info if needed
+		if (entityType === "payment") {
+			await PaymentRequest.findOneAndUpdate(
+				{ id_paiement: paymentRequest.id_paiement },
+				{
+					financeMessageTransfer: {
+						ts: response.ts,
+						createdAt: new Date(),
+						channel: toChannelId,
+					},
+				}
+			);
+		} else if (entityType === "order") {
+			await Order.findOneAndUpdate(
+				{ id_commande: order.id_commande },
+				{
+					financeMessageTransfer: {
+						ts: response.ts,
+						createdAt: new Date(),
+						channel: toChannelId,
+					},
+				}
+			);
+		}
+
+		// Update the original message to show it was transferred
+		await client.chat.update({
+			channel: originalChannelId,
+			ts: originalMessageTs,
+			blocks: transferredBlocks,
+		});
+
+		console.log(
+			`Entity ${entityId} transferred from ${fromCaisse.channelName} to ${toCaisse.channelName}`
+		);
+	} catch (error) {
+		console.error("Error confirming transfer:", error);
+		return {
+			response_action: "errors",
+			errors: {
+				general: `Erreur lors du transfert: ${error.message}`,
+			},
+		};
+	}
+};
+//
+// 1. Register the transfer_to_caisse action handler
+// app.action('transfer_to_caisse', async ({ action, client }) => {
+//   await handleTransferToCaisse(action, client);
+// });
+
+// Special blocks for transferred payments (without transfer option)
+// const getFinancePaymentBlocksForTransfer = (
+// 	paymentRequest,
+// 	transferredBy,
+// 	selectedCaisseId,
+// 	fromChannelName
+// ) => [
+// 	// Titre and validated by in the same section
+// 	...getPaymentRequestBlocks(paymentRequest, transferredBy),
+// 	{ type: "divider" },
+// 	{
+// 		type: "actions",
+// 		elements: [
+// 			{
+// 				type: "button",
+// 				text: {
+// 					type: "plain_text",
+// 					text: "Enregistrer paiement",
+// 					emoji: true,
+// 				},
+// 				style: "primary",
+// 				action_id: "finance_payment_form",
+// 				value: JSON.stringify({
+// 					entityId: paymentRequest.id_paiement,
+// 					selectedCaisseId: selectedCaisseId,
+// 				}),
+// 			},
+// 			// No transfer button for transferred payments
+// 		],
+// 	},
+// 	// Block context supplémentaire demandé
+// 	{
+// 		type: "context",
+// 		elements: [
+// 			{
+// 				type: "mrkdwn",
+// 				text: `✅ Validé par: <@${paymentRequest.validatedBy}> le ${new Date(
+// 					paymentRequest.validatedAt
+// 				).toLocaleString("fr-FR", {
+// 					timeZone: "Europe/Paris",
+// 					day: "2-digit",
+// 					month: "2-digit",
+// 					year: "numeric",
+// 					hour: "2-digit",
+// 					minute: "2-digit",
+// 				})}`,
+// 			},
+// 			{
+// 				type: "mrkdwn",
+// 				text: `🔄 Transaction affecté de : ${fromChannelName} par: <@${transferredBy}> le ${new Date().toLocaleString(
+// 					"fr-FR",
+// 					{
+// 						timeZone: "Europe/Paris",
+// 						day: "2-digit",
+// 						month: "2-digit",
+// 						year: "numeric",
+// 						hour: "2-digit",
+// 						minute: "2-digit",
+// 					}
+// 				)}`,
+// 			},
+// 		],
+// 	},
+// ];
+const getFinancePaymentBlocksForTransfer = (
+	entity,
+	transferredBy,
+	selectedCaisseId,
+	fromChannelName
+) => {
+	let blocks = [];
+	if (entity.id_commande) {
+		// It's an order
+		const requestDate = entity.date_requete || entity.date || new Date();
+		blocks = [
+			...getOrderBlocks(entity, requestDate),
+			// ...productPhotoBlocks,
+			...getProformaBlocks1(entity),
+
+			{
+				type: "actions",
+				elements: [
+					{
+						type: "button",
+						text: {
+							type: "plain_text",
+							text: "Enregistrer paiement",
+							emoji: true,
+						},
+						style: "primary",
+						action_id: "finance_payment_form",
+						value: JSON.stringify({
+							entityId: entity.id_commande,
+							selectedCaisseId: selectedCaisseId,
+						}),
+					},
+					// No transfer button for transferred payments
+				],
+			},
+			{
+				type: "context",
+				elements: [
+					{
+						type: "mrkdwn",
+						text: `🔄 *Commande transférée depuis:* ${fromChannelName} par <@${transferredBy}> le ${new Date().toLocaleString(
+							"fr-FR",
+							{
+								timeZone: "Europe/Paris",
+								day: "2-digit",
+								month: "2-digit",
+								year: "numeric",
+								hour: "2-digit",
+								minute: "2-digit",
+							}
+						)}`,
+					},
+				],
+			},
+		];
+	} else {
+		blocks = [
+			...getPaymentRequestBlocks(entity, transferredBy),
+			{ type: "divider" },
+			{
+				type: "actions",
+				elements: [
+					{
+						type: "button",
+						text: {
+							type: "plain_text",
+							text: "Enregistrer paiement",
+							emoji: true,
+						},
+						style: "primary",
+						action_id: "finance_payment_form",
+						value: JSON.stringify({
+							entityId: entity.id_paiement,
+							selectedCaisseId: selectedCaisseId,
+						}),
+					},
+					// No transfer button for transferred payments
+				],
+			},
+			// Block context supplémentaire demandé
+			{
+				type: "context",
+				elements: [
+					{
+						type: "mrkdwn",
+						text: `✅ Validé par: <@${entity.validatedBy}> le ${new Date(
+							entity.validatedAt
+						).toLocaleString("fr-FR", {
+							timeZone: "Europe/Paris",
+							day: "2-digit",
+							month: "2-digit",
+							year: "numeric",
+							hour: "2-digit",
+							minute: "2-digit",
+						})}`,
+					},
+					{
+						type: "mrkdwn",
+						text: `🔄 Transaction affecté de : ${fromChannelName} par: <@${transferredBy}> le ${new Date().toLocaleString(
+							"fr-FR",
+							{
+								timeZone: "Europe/Paris",
+								day: "2-digit",
+								month: "2-digit",
+								year: "numeric",
+								hour: "2-digit",
+								minute: "2-digit",
+							}
+						)}`,
+					},
+				],
+			},
+		];
+	}
+	return blocks;
+};
 
 async function handleBlockActions(payload, context) {
 	console.log("*------------------------------ handleBlockActions");
@@ -5957,18 +6559,69 @@ async function handleBlockActions(payload, context) {
 	console.log("** payloadType", payload.type);
 	console.log("*------------------------------ action", payload.actions[0]);
 	console.log("*------------------------------ action.value", action.value);
-	console.log("*------------------------------ actionId", payload.actions[0].action_id);
-	 if (actionId === "approve_transfer") {
-        console.log("** approve_transfer");
-        // Open confirmation modal instead of directly approving
-        return await openTransferApprovalConfirmation(payload, context);
-    }
-    
-    if (actionId === "reject_transfer") {
-        console.log("** reject_transfer");
-        // Open rejection reason modal instead of directly rejecting
-        return await openTransferRejectionReason(payload, context);
-    }
+	console.log(
+		"*------------------------------ actionId",
+		payload.actions[0].action_id
+	);
+	if (actionId === "approve_transfer") {
+		console.log("** approve_transfer");
+		// Open confirmation modal instead of directly approving
+		return await openTransferApprovalConfirmation(payload, context);
+	}
+	// if (actionId === "transfer_to_caisse") {
+	// 	console.log("** transfer_to_caisse");
+	// 	const client = new WebClient(process.env.SLACK_BOT_TOKEN); // <-- Add this line
+
+	// 	// Use selected_option.value for static_select
+	// 	const transferValue = action.selected_option?.value;
+	// 	if (!transferValue) {
+	// 		console.error("No selected_option.value for transfer_to_caisse");
+	// 		return;
+	// 	}
+	// 	// Open confirmation modal instead of directly approving
+	// 	return handleTransferToCaisse(
+	// 		{
+	// 			...action,
+	// 			value: transferValue,
+	// 			user: payload.user,
+	// 			message: payload.message,
+	// 		},
+	// 		client
+	// 	);
+	// }
+	if (actionId === "transfer_to_caisse") {
+		console.log("** transfer_to_caisse");
+		const client = new WebClient(process.env.SLACK_BOT_TOKEN);
+
+		// Use selected_option.value for static_select
+		const transferValue = action.selected_option?.value;
+		if (!transferValue) {
+			console.error("No selected_option.value for transfer_to_caisse");
+			return;
+		}
+
+		// Create action object with necessary properties
+		const actionForTransfer = {
+			...action,
+			value: transferValue,
+			user: payload.user,
+			message: payload.message,
+			channel: payload.channel,
+			trigger_id: payload.trigger_id, // Important for modal
+		};
+
+		return await handleTransferToCaisse(actionForTransfer, client);
+	}
+	// 2. Register the confirmation modal handler
+	// app.view('confirm_transfer_modal', async ({ view, client }) => {
+	//   return await handleTransferConfirmation(view, client);
+	// });
+
+	if (actionId === "reject_transfer") {
+		console.log("** reject_transfer");
+		// Open rejection reason modal instead of directly rejecting
+		return await openTransferRejectionReason(payload, context);
+	}
 	if (actionId === "edit_order") {
 		console.log("** edit_order");
 		try {
@@ -6455,7 +7108,7 @@ async function handleBlockActions(payload, context) {
 
 			case "payment_method_selection":
 				console.log("** payment_method_selection");
-				await handlePaymentMethodSelection1(payload);
+				await handlePaymentMethodSelection1(payload, context);
 
 				return createSlackResponse(200, "");
 				break;
@@ -6613,7 +7266,6 @@ async function handleBlockActions(payload, context) {
 				return openRejectionReasonModalFund(payload, fundId, caisseType);
 
 			case "accept_order":
-			case "reject_order":
 				const entityId1 = action.value;
 				let order;
 				console.log("paymentId", entityId1);
@@ -6648,7 +7300,40 @@ async function handleBlockActions(payload, context) {
 				}
 
 				return await handleOrderStatus(payload, action, context);
+			case "reject_order":
+				console.log("paymentId", action.value);
+				console.log("action&", action);
 
+				const entity2 = await fetchEntity(action.value, context);
+				if (!entity2) {
+					context.log(`Entity ${action.value} not found`);
+					return {
+						response_action: "errors",
+						errors: {
+							_error: `Entity ${action.value} not found`,
+						},
+					};
+				}
+
+				// Check order status
+				const status1 = entity2.statut;
+				console.log("status1", status1);
+				// Check if the order has already been approved once
+				if (entity2.isApprovedOnce) {
+					await postSlackMessage(
+						"https://slack.com/api/chat.postEphemeral",
+						{
+							channel: process.env.SLACK_ADMIN_ID,
+							user: payload.user.id,
+							text: `❌ Cet demande a déjà été ${status1}e.`,
+						},
+						process.env.SLACK_BOT_TOKEN
+					);
+					return { response_action: "clear" };
+				}
+
+				console.log("Rejecting order", action.value);
+				return openRejectionReasonModal(payload, action.value);
 			case "reopen_order":
 				return await reopenOrder(payload, action, context);
 
@@ -6680,10 +7365,9 @@ async function handleBlockActions(payload, context) {
 			case "finance_payment_form":
 				console.log("** finance_payment_form");
 				let entityId, selectedCaisseId;
-				const caisseId = await Caisse.findOne(
-					{ type: "principale" },
-					"_id"
-				).then((caisse) => caisse?._id?.toString() || null); // Add .toString()
+				const caisseId = await Caisse.findOne({ type: "Centrale" }, "_id").then(
+					(caisse) => caisse?._id?.toString() || null
+				); // Add .toString()
 				console.log("Caisse ID:", caisseId);
 				try {
 					// Check if the value is a JSON string or a plain order ID
@@ -8002,4 +8686,5 @@ module.exports = {
 	executeOrderDeletion,
 	handleFundingApprovalPaymentSubmission,
 	postSlackMessage2,
+	handleTransferConfirmation,
 };

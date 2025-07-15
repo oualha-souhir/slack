@@ -30,6 +30,7 @@ const {
 	reopenOrder,
 	handleRejectionReasonSubmission,
 } = require("./orderStatusService");
+
 let payload;
 
 // async function notifyFinancePayment(paymentRequest, context, validatedBy) {
@@ -59,6 +60,42 @@ let payload;
 // 	}
 // }
 // Updated notifyFinancePayment function
+let caisseTypesCache = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+async function getCaisseTypes() {
+	const now = Date.now();
+
+	// Check if cache is valid
+	if (
+		caisseTypesCache &&
+		cacheTimestamp &&
+		now - cacheTimestamp < CACHE_DURATION
+	) {
+		return caisseTypesCache;
+	}
+
+	// Refresh cache
+	try {
+		const caisses = await Caisse.find({}, "type").exec();
+		caisseTypesCache = caisses.map((caisse) => ({
+			text: { type: "plain_text", text: caisse.type },
+			value: caisse.type,
+		}));
+		cacheTimestamp = now;
+		return caisseTypesCache;
+	} catch (error) {
+		// Return cached data if available, otherwise throw
+		if (caisseTypesCache) {
+			console.warn("Database query failed, using cached caisse types");
+			return caisseTypesCache;
+		}
+		throw error;
+	}
+}
+
+
 async function notifyFinancePayment(
 	paymentRequest,
 	context,
@@ -70,11 +107,19 @@ async function notifyFinancePayment(
 	console.log("== selectedPaymentMethod", selectedPaymentMethod);
 	console.log("== selectedCaisseId", selectedCaisseId);
 	try {
+		const availableCaisses = await Caisse.find({}).exec();
+
 		let targetChannelId = process.env.SLACK_FINANCE_CHANNEL_ID; // default fallback
 
-		const caisseId = await Caisse.findOne({ type: "principale" }, "_id").then(
+		const caisseId = await Caisse.findOne({ type: "Centrale" }, "_id").then(
 			(caisse) => caisse?._id || null
 		);
+		// Get caisse types from cache (fast)
+		const caisseOptions = await getCaisseTypes();
+
+		if (!caisseOptions || caisseOptions.length === 0) {
+			throw new Error("Aucune caisse disponible dans la base de données.");
+		}
 		console.log("Caisse ID:", caisseId);
 		// Determine which channel to send to based on caisse selection
 		if (selectedPaymentMethod === "caisse_transfer" && selectedCaisseId) {
@@ -121,7 +166,8 @@ async function notifyFinancePayment(
 				blocks: getFinancePaymentBlocks(
 					paymentRequest,
 					validatedBy,
-					finalCaisseId
+					finalCaisseId,
+					availableCaisses
 				),
 				metadata: {
 					selectedCaisseId: finalCaisseId, // Include selectedCaisseId in metadata
@@ -131,7 +177,15 @@ async function notifyFinancePayment(
 		);
 
 		context.log(`notifyFinancePayment response: ${JSON.stringify(response)}`);
-
+		await PaymentRequest.findOneAndUpdate(
+			{ id_paiement: paymentRequest.id_paiement },
+			{
+				financeMessage: {
+					ts: response.ts,
+					createdAt: new Date(),
+				},
+			}
+		);
 		if (!response.ok) {
 			throw new Error(`Slack API error: ${response.error}`);
 		}
@@ -142,10 +196,12 @@ async function notifyFinancePayment(
 		throw error;
 	}
 }
+
 const getFinancePaymentBlocks = (
 	paymentRequest,
 	validatedBy,
-	selectedCaisseId
+	selectedCaisseId,
+	availableCaisses = []
 ) => [
 	// Titre and validated by in the same section
 
@@ -167,10 +223,57 @@ const getFinancePaymentBlocks = (
 					entityId: paymentRequest.id_paiement,
 					selectedCaisseId: selectedCaisseId,
 				}),
-				// const { entityId, selectedCaisseId } = JSON.parse(action.value); // Extract both values
-				// console.log("id_paiement:", id_paiement);
-				// console.log("selectedCaisseId:", selectedCaisseId);
 			},
+			// Add transfer button
+			{
+				type: "static_select",
+				placeholder: {
+					type: "plain_text",
+					text: "Affecter la transaction",
+					emoji: true,
+				},
+				action_id: "transfer_to_caisse",
+				options: availableCaisses
+					.filter((caisse) => caisse._id.toString() !== selectedCaisseId) // Exclude current caisse
+					.map((caisse) => ({
+						text: {
+							type: "plain_text",
+							text: `${caisse.type} (${caisse.channelName})`,
+							emoji: true,
+						},
+						value: JSON.stringify({
+							entityId: paymentRequest.id_paiement,
+							fromCaisseId: selectedCaisseId,
+							toCaisseId: caisse._id.toString(),
+							toChannelId: caisse.channelId,
+						}),
+					})),
+			},
+			// Add transfer button
+			// {
+			// 	type: "static_select",
+			// 	placeholder: {
+			// 		type: "plain_text",
+			// 		text: "Transférer vers une autre caisse",
+			// 		emoji: true,
+			// 	},
+			// 	action_id: "transfer_to_caisse",
+			// 	options: availableCaisses
+			// 		.filter((caisse) => caisse._id.toString() !== selectedCaisseId) // Exclude current caisse
+			// 		.map((caisse) => ({
+			// 			text: {
+			// 				type: "plain_text",
+			// 				text: `${caisse.type} (${caisse.channelName})`,
+			// 				emoji: true,
+			// 			},
+			// 			value: JSON.stringify({
+			// 				entityId: paymentRequest.id_paiement,
+			// 				fromCaisseId: selectedCaisseId,
+			// 				toCaisseId: caisse._id.toString(),
+			// 				toChannelId: caisse.channelId,
+			// 			}),
+			// 		})),
+			// },
 		],
 	},
 	// Block context supplémentaire demandé
@@ -179,7 +282,14 @@ const getFinancePaymentBlocks = (
 		elements: [
 			{
 				type: "mrkdwn",
-				text: `✅ *Validé par:* <@${validatedBy}>`,
+				text: `✅ *Validé par:* <@${validatedBy}> le ${new Date(paymentRequest.validatedAt).toLocaleString("fr-FR", {
+					timeZone: "Europe/Paris",
+					day: "2-digit",
+					month: "2-digit",
+					year: "numeric",
+					hour: "2-digit",
+					minute: "2-digit",
+				})}`,
 			},
 		],
 	},
@@ -730,6 +840,8 @@ async function handleSlackInteractions(request, context) {
 										{
 											statut: "Validé",
 											autorisation_admin: true,
+											validatedAt: new Date(),
+											validatedBy: payload.user.id,
 											updatedAt: new Date(),
 											isApprovedOnce: true,
 										},
@@ -762,6 +874,8 @@ async function handleSlackInteractions(request, context) {
 										{
 											statut: "Validé",
 											autorisation_admin: true,
+											validatedAt: new Date(),
+											validatedBy: payload.user.id,
 											updatedAt: new Date(),
 										},
 										{ new: true }
@@ -869,4 +983,5 @@ async function handleSlackInteractions(request, context) {
 	}
 }
 
+//*
 module.exports = { handleSlackInteractions };
