@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slack Bot Financial Management System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .modules-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        .module {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .module:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .module-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            margin-right: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: white;
+        }
+
+        .caisse-icon { background: linear-gradient(45deg, #4CAF50, #45a049); }
+        .order-icon { background: linear-gradient(45deg, #2196F3, #1976D2); }
+        .payment-icon { background: linear-gradient(45deg, #FF9800, #F57C00); }
+
+        .module-title {
+            font-size: 1.5em;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .workflow-section {
+            margin-bottom: 25px;
+        }
+
+        .workflow-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+
+        .workflow-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .step {
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 3px solid #28a745;
+            font-size: 0.9em;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .step:hover {
+            background: #e9ecef;
+            transform: translateX(5px);
+        }
+
+        .step-number {
+            display: inline-block;
+            background: #007bff;
+            color: white;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 20px;
+            font-size: 0.8em;
+            margin-right: 10px;
+            font-weight: 600;
+        }
+
+        .function-name {
+            font-family: 'Courier New', monospace;
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #495057;
+        }
+
+        .architecture-section {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .architecture-title {
+            font-size: 1.8em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .architecture-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .arch-category {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            border-left: 4px solid #6c757d;
+        }
+
+        .arch-category h3 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .arch-items {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .arch-item {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            border-left: 2px solid #007bff;
+        }
+
+        .highlight {
+            background: linear-gradient(45deg, #ffd700, #ffed4a);
+            color: #333;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .actions-section {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .actions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .action-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            border-left: 4px solid #17a2b8;
+            transition: all 0.3s ease;
+        }
+
+        .action-item:hover {
+            background: #e9ecef;
+            transform: translateY(-2px);
+        }
+
+        .action-trigger {
+            font-weight: 600;
+            color: #17a2b8;
+            margin-bottom: 5px;
+        }
+
+        .action-function {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            color: #6c757d;
+        }
+
+        @media (max-width: 768px) {
+            .modules-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .architecture-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .actions-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Slack Bot Financial Management System</h1>
+            <p>Comprehensive workflow overview for Caisse, Order Management, and Payment Processing</p>
+        </div>
+
+        <div class="modules-grid">
+            <!-- CAISSE MODULE -->
+            <div class="module">
+                <div class="module-header">
+                    <div class="module-icon caisse-icon">💰</div>
+                    <div class="module-title">CAISSE MODULE</div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">💼 Funding Request Flow</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>open_funding_form</strong> → <span class="function-name">handleOpenFundingForm</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            Generate form → <span class="function-name">generateFundingRequestForm</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">3</span>
+                            <strong>submit_funding_request</strong> → <span class="function-name">handleSubmitFundingRequest</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">✅ Approval Process</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">4</span>
+                            <strong>pre_approve_funding</strong> → <span class="function-name">openPreApprovalConfirmationDialog</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">5</span>
+                            <strong>pre_approval_confirmation_submit</strong> → <span class="function-name">handlePreApprovalConfirmation</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">6</span>
+                            <strong>fill_funding_details</strong> → <span class="function-name">handleFillFundingDetails</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">7</span>
+                            Generate payment modal → <span class="function-name">generateFundingApprovalPaymentModal</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">8</span>
+                            Select a payment method → <span class="function-name">handlePaymentMethodSelection</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">❌ Rejection Process</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">4</span>
+                            <strong>reject_fund</strong> → <span class="function-name">openRejectionReasonModalFund</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">5</span>
+                            <strong>reject_funding</strong> → <span class="function-name">handleRejectFunding</span>→ <span class="function-name">processFundingApproval</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">🚨 Problem Reporting</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">10</span>
+                            <strong>report_fund_problem</strong> → <span class="function-name">handleReportProblem</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">11</span>
+                            <strong>fund_problem_submission</strong> → <span class="function-name">handleFundProblemSubmission</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">13</span>
+                            <strong>correct_funding_details</strong> → <span class="function-name">generateCorrectionModal</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ORDER MODULE -->
+            <div class="module">
+                <div class="module-header">
+                    <div class="module-icon order-icon">📋</div>
+                    <div class="module-title">ORDER MODULE</div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">📝 Order Creation</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>order_form</strong> → <span class="function-name">generateOrderForm</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>order_form_submission</strong> → <span class="function-name">handleOrderFormSubmission</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">📄 Proforma Management</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>add_proforma</strong> → <span class="function-name">handleAddProforma</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>proforma_form</strong> → <span class="function-name">proforma_form</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">3</span>
+                            <strong>proforma_submission</strong> → <span class="function-name">handleProformaSubmission</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">4</span>
+                            <strong>edit_proforma</strong> → <span class="function-name">handleEditProforma</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">5</span>
+                            <strong>confirm_validate_proforma</strong> → <span class="function-name">handleProformaValidationRequest</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">🛍️ Article Management</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>add_article</strong> → <span class="function-name">handleAddArticle</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>remove_article</strong> → <span class="function-name">handleRemoveArticle</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">3</span>
+                            Generate blocks → <span class="function-name">generateArticleBlocks</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">✅ Approval Flow</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>payment_verif_accept</strong> → <span class="function-name">handlePaymentVerification</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>payment_verif_confirm</strong> → <span class="function-name">handlePaymentVerificationConfirm</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">❌ Rejection Flow</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>reject_order</strong> → <span class="function-name">openRejectionReasonModal</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>rejection_reason_modal</strong> → <span class="function-name">RejectionReasonSubmission</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PAYMENT REQUEST MODULE -->
+            <div class="module">
+                <div class="module-header">
+                    <div class="module-icon payment-icon">💳</div>
+                    <div class="module-title">PAYMENT REQUEST MODULE</div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">💰 Payment Processing</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>finance_payment_form</strong> → <span class="function-name">handleFinancePaymentForm</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>select_payment_mode</strong> → <span class="function-name">handlePaymentFormModeSelection</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">3</span>
+                            <strong>payment_form_submission</strong> → <span class="function-name">processPaymentSubmission</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">🔄 Transfer Management</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>transfer_to_caisse</strong> → <span class="function-name">handleTransferToCaisse</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>confirm_transfer_modal</strong> → <span class="function-name">handleTransferConfirmation</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="workflow-section">
+                    <div class="workflow-title">⚠️ Problem Handling</div>
+                    <div class="workflow-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <strong>report_problem</strong> → <span class="function-name">handleReportProblem</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <strong>payment_problem_submission</strong> → <span class="function-name">handlePaymentProblemSubmission</span>
+                        </div>
+                        <div class="step">
+                            <span class="step-number">3</span>
+                            <strong>modify_payment</strong> → <span class="function-name">handleModifyPayment</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="architecture-section">
+            <h2 class="architecture-title">🏗️ System Architecture</h2>
+            <div class="architecture-grid">
+                <div class="arch-category">
+                    <h3>📁 Core Components</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">MainHandlers - <span class="highlight">Entry Points</span></div>
+                        <div class="arch-item">handleBlockActions.js</div>
+                        <div class="arch-item">handleViewSubmission.js</div>
+                        <div class="arch-item">slackInteractions.js</div>
+                    </div>
+                </div>
+
+                <div class="arch-category">
+                    <h3>🗄️ Database Models</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">Caisse.js</div>
+                        <div class="arch-item">Order.js</div>
+                        <div class="arch-item">PaymentRequest.js</div>
+                        <div class="arch-item">FormData.js</div>
+                        <div class="arch-item">UserRole.js</div>
+                    </div>
+                </div>
+
+                <div class="arch-category">
+                    <h3>🧠 AI Services</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">aiService.js - <span class="highlight">Smart Processing</span></div>
+                        <div class="arch-item">summarizeOrder</div>
+                        <div class="arch-item">parseOrderFromText</div>
+                        <div class="arch-item">checkFormErrors</div>
+                        <div class="arch-item">handleFrequentQuestions</div>
+                    </div>
+                </div>
+
+                <div class="arch-category">
+                    <h3>📊 Excel Integration</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">Excel.js - <span class="highlight">Data Sync</span></div>
+                        <div class="arch-item">syncOrderToExcel</div>
+                        <div class="arch-item">syncPaymentRequestToExcel</div>
+                        <div class="arch-item">syncCaisseToExcel</div>
+                        <div class="arch-item">generateReport</div>
+                    </div>
+                </div>
+
+                <div class="arch-category">
+                    <h3>⏰ Delay Management</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">handleDelay.js</div>
+                        <div class="arch-item">checkPendingOrderDelays</div>
+                        <div class="arch-item">checkPaymentDelays</div>
+                        <div class="arch-item">setupDelayMonitoring</div>
+                    </div>
+                </div>
+
+                <div class="arch-category">
+                    <h3>🔧 Utilities</h3>
+                    <div class="arch-items">
+                        <div class="arch-item">slackUtils.js</div>
+                        <div class="arch-item">config.js</div>
+                        <div class="arch-item">roles.js</div>
+                        <div class="arch-item">notifyProblem.js</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="actions-section">
+            <h2 class="architecture-title">⚡ Key Action Mappings</h2>
+            <div class="actions-grid">
+                <div class="action-item">
+                    <div class="action-trigger">block_actions</div>
+                    <div class="action-function">handleBlockActions</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">view_submission</div>
+                    <div class="action-function">handleViewSubmission</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">interactive_message</div>
+                    <div class="action-function">generateOrderForm</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">payment_verif_accept</div>
+                    <div class="action-function">handlePaymentVerification</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">reject_order</div>
+                    <div class="action-function">openRejectionReasonModal</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">transfer_to_caisse</div>
+                    <div class="action-function">handleTransferToCaisse</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">report_problem</div>
+                    <div class="action-function">handleReportProblem</div>
+                </div>
+                <div class="action-item">
+                    <div class="action-trigger">modify_payment</div>
+                    <div class="action-function">handleModifyPayment</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
