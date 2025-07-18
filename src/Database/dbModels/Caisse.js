@@ -134,6 +134,7 @@ const caisseSchema = new mongoose.Schema({
 		type: String,
 		required: true,
 	},
+	prefix: { type: String, required: true },
 	channelId: {
 		type: String, // Slack channel ID associated with the caisse
 		required: true,
@@ -158,5 +159,4 @@ module.exports = {
 	Caisse,
 	DecaissementCounter,
 	PaymentCounter,
-
 };

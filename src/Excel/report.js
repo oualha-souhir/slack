@@ -24,16 +24,17 @@ async function syncCaisseToExcel(caisse, requestId) {
 				}
 				if (!requestId) {
 					console.log("No requestId provided. Syncing caisse balances only.");
+					const prefix = caisse.prefix || "N/A";
 					const now = new Date();
 					const year = now.getFullYear();
 					const month = (now.getMonth() + 1).toString().padStart(2, "0");
 					const existingRequests = caisse.fundingRequests.filter((req) =>
-						req.requestId.startsWith(`FUND/${year}/${month}/`)
+						req.requestId.startsWith(`FUND/${prefix}/${year}/${month}/`)
 					);
 					console.log("Existing requests for this month:", existingRequests);
 					const sequence = existingRequests.length + 1;
 					const sequenceStr = sequence.toString().padStart(4, "0");
-					const requestId = `FUND/${year}/${month}/${sequenceStr}`;
+					const requestId = `FUND/${prefix}/${year}/${month}/${sequenceStr}`;
 
 					const rowData = [
 						requestId, // Request ID

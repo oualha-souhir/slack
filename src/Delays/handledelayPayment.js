@@ -23,7 +23,7 @@ async function checkPendingPaymentRequestDelays(context) {
 			`Found ${pendingPaymentRequests.length} delayed pending payment requests`
 		);
 		if (pendingPaymentRequests.length > 0) {
-			let summary = `:warning: *Rappel quotidien - demande de paiement en attente*\n\n`;
+			let summary = `:warning: *Rappel quotidien - demandes de paiement en attente*\n\n`;
 			summary += `*Demande de paiement non traitées depuis plus de 24h:*\n`;
 			pendingPaymentRequests.forEach((PaymentRequest) => {
 				const msgObj = PaymentRequest.adminMessage;
@@ -42,7 +42,7 @@ async function checkPendingPaymentRequestDelays(context) {
 					PaymentRequest.titre || "Sans titre"
 				} (Demandeur: <@${PaymentRequest.demandeurId}>) ${link}\n`;
 			});
-			summary += `\nMerci de traiter ces demandes de décaissement dès que possible.`;
+			summary += `\nMerci de traiter ces demandes de paiement dès que possible.`;
 
 			const adminchannel = process.env.SLACK_ADMIN_ID || "CXXXXXXX";
 			await postSlackMessage(
@@ -154,8 +154,8 @@ async function checkPaymentRequestApprovalDelays(context) {
 
 		// Send messages to each channel
 		for (const [channelId, requests] of PaymentRequestByChannel) {
-			let summary = `:warning: *Rappel quotidien - demande de paiement en attente*\n\n`;
-			summary += `*Demande de paiement validées sans paiement depuis plus de 24h:*\n`;
+			let summary = `:warning: *Rappel quotidien - demandes de paiement en attente*\n\n`;
+			summary += `*Demandes de paiement validées sans paiement depuis plus de 24h:*\n`;
 
 			requests.forEach(({ PaymentRequest, msgObj }) => {
 				const ts = msgObj?.ts;
@@ -174,7 +174,7 @@ async function checkPaymentRequestApprovalDelays(context) {
 				} (Demandeur: <@${PaymentRequest.demandeurId}>)${link}\n`;
 			});
 
-			summary += `\nMerci de traiter ces demandes de décaissement dès que possible.`;
+			summary += `\nMerci de traiter ces demandes de paiement dès que possible.`;
 
 			// Post message to the appropriate channel
 			const targetChannelId = channelId;

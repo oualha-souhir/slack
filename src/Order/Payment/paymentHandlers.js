@@ -1283,7 +1283,7 @@ async function processPaymentSubmission(payload, context) {
 							"https://slack.com/api/chat.postMessage",
 							{
 								channel: targetChannelId,
-								text: `❌ Le montant payé (${amountPaid}) dépasse le montant restant dû (${originalRemainingAmount}) même en incluant les frais (${fees}).`,
+								text: `❌ 1 Le montant payé (${amountPaid}) dépasse le montant restant dû (${originalRemainingAmount}) même en incluant les frais (${fees}).`,
 							},
 							slackToken
 						);
@@ -1295,7 +1295,7 @@ async function processPaymentSubmission(payload, context) {
 						"https://slack.com/api/chat.postMessage",
 						{
 							channel: targetChannelId,
-							text: `❌ Le montant payé (${amountPaid}) dépasse le montant restant dû (${originalRemainingAmount}).`,
+							text: `❌ 2 Le montant payé (${amountPaid}) dépasse le montant restant dû (${originalRemainingAmount}).`,
 						},
 						slackToken
 					);
@@ -1706,13 +1706,13 @@ async function handlePayment(orderId, paymentAmount, totalAmountDue, context) {
 				"https://slack.com/api/chat.postMessage",
 				{
 					channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-					text: `❌ Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`,
+					text: `❌ 3 Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`,
 				},
 				process.env.SLACK_BOT_TOKEN
 			);
 
 			throw new Error(
-				`Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`
+				`4 Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`
 			);
 		}
 
@@ -1776,13 +1776,13 @@ async function handlePayment(orderId, paymentAmount, totalAmountDue, context) {
 				"https://slack.com/api/chat.postMessage",
 				{
 					channel: process.env.SLACK_FINANCE_CHANNEL_ID,
-					text: `❌ Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`,
+					text: `❌ 5 Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`,
 				},
 				process.env.SLACK_BOT_TOKEN
 			);
 
 			throw new Error(
-				`Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`
+				`6 Le montant payé (${paymentAmount}) dépasse le montant restant dû (${remainingAmount}).`
 			);
 		}
 

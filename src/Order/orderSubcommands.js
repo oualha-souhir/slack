@@ -1085,9 +1085,9 @@ async function handleOrderHelpCommand(
 		helpText += "• `/caisse` - Créer une demande de fonds\n";
 		helpText += "• `/caisse list` - Lister les caisses\n";
 		helpText +=
-			"• `/caisse create <nom_de_la_caisse> #canal_associé` - Créer une nouvelle caisse \n";
+			"• `/caisse create [name] [prefix] #channel` - Créer une nouvelle caisse \n";
 		helpText +=
-			"• `/caisse delete #canal_de_la_caisse` - Supprimer une caisse \n";
+			"• `/caisse delete [name] #channel` - Supprimer une caisse \n";
 		helpText += "• `/caisse transfer` - Transfert de solde entre caisses. \n";
 	}
 	// Add general commands for all users

@@ -25,7 +25,10 @@ const {
 } = require("./src/Order/Handlers/orderNotificationService.js");
 const { Order } = require("./src/Database/dbModels/Order.js");
 const { notifyTechSlack } = require("./src/Common/notifyProblem.js");
-const { checkPendingPaymentRequestDelays, checkPaymentRequestApprovalDelays } = require("./src/Delays/handledelayPayment.js");
+const {
+	checkPendingPaymentRequestDelays,
+	checkPaymentRequestApprovalDelays,
+} = require("./src/Delays/handledelayPayment.js");
 require("./src/Database/config/database.js");
 
 app.http("orderSlackApi", {
@@ -65,21 +68,36 @@ app.http("slackInteractions", {
 if (process.env.NODE_ENV === "production") {
 	console.log("🚀 Production environment detected - registering timers");
 
-	app.timer("delayMonitoring", {
-		schedule: "0 0 9 * * *", // Every day at 9:00 AM
+	// 9:00 AM Ivory Coast time (GMT+0) - Morning delay monitoring
+	app.timer("delayMonitoringMorning", {
+		schedule: "0 0 9 * * *", // 9:00 AM UTC (same as Ivory Coast time)
 		handler: async (timer, context) => {
-			context.log("Running delay monitoring");
-
-			// await checkPendingOrderDelays(context);
-			// await checkPaymentDelays(context);
-			// await checkProformaDelays(context);
+			context.log(
+				"Running morning delay monitoring (9:00 AM Ivory Coast time)"
+			);
+			await checkPendingOrderDelays(context);
+			await checkPaymentDelays(context);
+			await checkProformaDelays(context);
 			await checkPendingPaymentRequestDelays(context);
 			await checkPaymentRequestApprovalDelays(context);
-
-			context.log("Delay monitoring completed");
+			context.log("Morning delay monitoring completed");
 		},
 	});
-
+	// 3:00 PM Ivory Coast time (GMT+0) - Afternoon delay monitoring
+	app.timer("delayMonitoringAfternoon", {
+		schedule: "0 0 15 * * *", // 3:00 PM UTC (same as Ivory Coast time)
+		handler: async (timer, context) => {
+			context.log(
+				"Running afternoon delay monitoring (3:00 PM Ivory Coast time)"
+			);
+			await checkPendingOrderDelays(context);
+			await checkPaymentDelays(context);
+			await checkProformaDelays(context);
+			await checkPendingPaymentRequestDelays(context);
+			await checkPaymentRequestApprovalDelays(context);
+			context.log("Afternoon delay monitoring completed");
+		},
+	});
 	app.timer("dailyReport", {
 		schedule: "0 5 9 * * *", // Daily at 9:05 AM
 

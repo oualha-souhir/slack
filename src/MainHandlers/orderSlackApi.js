@@ -1,4 +1,5 @@
 const { WebClient } = require("@slack/web-api");
+
 const {
 	handleOrderWelcomeMessage,
 	handleOrderMyOrderCommand,
@@ -22,7 +23,10 @@ const {
 	isFinanceUser,
 	isPurchaseUser,
 } = require("../Configurations/roles");
-const { createSlackResponse } = require("../Common/slackUtils");
+const {
+	createSlackResponse,
+	postSlackMessageWithRetry,
+} = require("../Common/slackUtils");
 const {
 	checkPendingOrderDelays,
 	checkPaymentDelays,
@@ -49,6 +53,7 @@ const {
 } = require("../Delays/handledelayPayment");
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 
+const { updateFinancePaymentMessage } = require("../../notifyFinance");
 //* Main handler for order Slack API interactions
 async function handleOrderSlackApi(request, context) {
 	console.log("** handleOrderSlackApi");
@@ -200,7 +205,12 @@ async function handleCaisseCommand(
 	}
 	//! /caisse delete #dept-admin
 	if (subCommand === "delete") {
-		return await handleCaisseDeleteCommand(text);
+		return await handleCaisseDeleteCommand(
+			text,
+			slackClient,
+			userId,
+			channelId
+		);
 	}
 	//! /caisse list
 
@@ -276,9 +286,53 @@ async function handleOrderCommand(
 	const subCommand = textArgs[0];
 	const isUserFinance = await isFinanceUser(userId);
 	const isUserPurchase = await isPurchaseUser(userId);
+
 	//** welcome message
 	if (!text.trim()) {
 		return await handleOrderWelcomeMessage(userId);
+	}
+	//** /caisse delete-message <channel> <ts> */
+	if (subCommand === "delete-message") {
+		const channelToDelete = textArgs[1].replace(/[<@#>]/g, "").split("|")[0];
+
+		const tsToDelete = textArgs[2];
+		if (!channelToDelete || !tsToDelete) {
+			return await postSlackMessageWithRetry(
+				"https://slack.com/api/chat.postEphemeral",
+				{
+					channel: channelId,
+					user: userId,
+					text: "❗ Usage: /caisse delete-message <channel> <ts>",
+				},
+				process.env.SLACK_BOT_TOKEN
+			);
+		}
+		try {
+			console.log(
+				`Deleting message in channel ${channelToDelete} with ts ${tsToDelete}`
+			);
+			//
+			await slackClient.chat.delete({
+				channel: channelToDelete,
+				ts: tsToDelete,
+			});
+
+			return await postSlackMessageWithRetry(
+				"https://slack.com/api/chat.postEphemeral",
+				{
+					channel: channelId,
+					user: userId,
+					text: `✅ Message supprimé dans le canal ${channelToDelete}.`,
+				},
+				process.env.SLACK_BOT_TOKEN
+			);
+		} catch (error) {
+			return createSlackResponse(200, {
+				text: `❌ Erreur lors de la suppression: ${
+					error.data?.error || error.message
+				}`,
+			});
+		}
 	}
 	//! /order report  <order,team,channel,date,status,user>   <value, (YYYY-MM-DD), (En attente, Validé, Rejeté)>
 	//! /order report team Peintre
@@ -291,11 +345,19 @@ async function handleOrderCommand(
 			context
 		);
 	}
+
+	if (subCommand === "update-finance-message") {
+		await updateFinancePaymentMessage();
+		return createSlackResponse(200, {
+			text: `✅ Message de paiement mis à jour .`,
+		});
+	}
 	//! /order summary
 	//? changed from report to summary
 	if (text.trim() === "summary") {
 		return await handleOrderSummaryCommand(context);
 	}
+
 	//! /order add-role @user [admin|finance|achat]
 	if (text.trim().startsWith("add-role")) {
 		return await handleOrderRoleCommands(text, userId, channelId, isUserAdmin);

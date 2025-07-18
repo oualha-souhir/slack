@@ -705,6 +705,38 @@ async function handleFinalApprovalConfirmation(payload, context) {
 			},
 			process.env.SLACK_BOT_TOKEN
 		);
+		await postSlackMessageWithRetry(
+			"https://slack.com/api/chat.postMessage",
+			{
+				channel: caisse.channelId,
+				blocks: [
+					{
+						type: "header",
+						text: {
+							type: "plain_text",
+							text: `:heavy_dollar_sign: ✅ Demande de fonds approuvée: ${requestId}`,
+							emoji: true,
+						},
+					},
+					...block,
+					{
+						type: "context",
+						elements: [
+							{
+								type: "mrkdwn",
+								text: `Approuvée par <@${userId}> le ${new Date().toLocaleDateString()}\nSoldes: XOF: *${
+									caisse.balances.XOF
+								}*, USD: *${caisse.balances.USD}*, EUR: *${
+									caisse.balances.EUR
+								}*`,
+							},
+						],
+					},
+				],
+				text: `Demande ${requestId} approuvée par ${userId}`,
+			},
+			process.env.SLACK_BOT_TOKEN
+		);
 	});
 
 	return context.res;

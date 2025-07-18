@@ -374,6 +374,7 @@ async function generateFundingRequestForm(context, trigger_id, params) {
 	try {
 		// Get caisse types from cache (fast)
 		const caisseOptions = await getCaisseTypes();
+		console.log(",,,, caisseOptions", caisseOptions);
 
 		if (!caisseOptions || caisseOptions.length === 0) {
 			throw new Error("Aucune caisse disponible dans la base de données.");
@@ -577,7 +578,7 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 			formData.funding_date.input_funding_date.selected_date;
 		const caisseType =
 			formData.caisse_type.input_caisse_type.selected_option.value;
-		console.log("caisseType", caisseType);
+		console.log("..... caisseType", caisseType);
 		const caisse = await Caisse.findOne({ type: caisseType });
 		if (!caisse) {
 			await postSlackMessageWithRetry(
@@ -599,15 +600,16 @@ async function handleFundingRequestSubmission(payload, context, userName) {
 		// 	});
 
 		// Generate requestId in format FUND/YYYY/MM/XXXX
+		const prefix = caisse.prefix || "N/A";
 		const now = new Date();
 		const year = now.getFullYear();
 		const month = (now.getMonth() + 1).toString().padStart(2, "0");
 		const existingRequests = caisse.fundingRequests.filter((req) =>
-			req.requestId.startsWith(`FUND/${year}/${month}/`)
+			req.requestId.startsWith(`FUND/${prefix}/${year}/${month}/`)
 		);
 		const sequence = existingRequests.length + 1;
 		const sequenceStr = sequence.toString().padStart(4, "0");
-		const requestId = `FUND/${year}/${month}/${sequenceStr}`;
+		const requestId = `FUND/${prefix}/${year}/${month}/${sequenceStr}`;
 
 		// Push new funding request with "En attente" status
 		caisse.fundingRequests.push({

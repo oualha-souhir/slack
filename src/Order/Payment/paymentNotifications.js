@@ -287,6 +287,12 @@ async function getPaymentBlocks(
 ) {
 	console.log("** getPaymentBlocks");
 	//console.log("entity111",entity);
+	console.log("** entity", entity);
+	console.log("** paymentData", paymentData);
+	console.log("** remainingAmount", remainingAmount);
+	console.log("** paymentStatus", paymentStatus);
+	console.log("** paymentNumber", paymentNumber);
+	console.log("** decaissementNumber", decaissementNumber);
 
 	const isOrder = entity && "id_commande" in entity;
 	const isPaymentRequest = entity && "id_paiement" in entity;

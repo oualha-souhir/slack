@@ -309,15 +309,16 @@ async function createAndSaveRefundRequest(
 		});
 
 	// Generate requestId in format FUND/YYYY/MM/XXXX
+	const prefix = caisse.prefix || "N/A";
 	const now = new Date();
 	const year = now.getFullYear();
 	const month = (now.getMonth() + 1).toString().padStart(2, "0");
 	const existingRequests = caisse.fundingRequests.filter((req) =>
-		req.requestId.startsWith(`FUND/${year}/${month}/`)
+		req.requestId.startsWith(`FUND/${prefix}/${year}/${month}/`)
 	);
 	const sequence = existingRequests.length + 1;
 	const sequenceStr = sequence.toString().padStart(4, "0");
-	const requestId = `FUND/${year}/${month}/${sequenceStr}`;
+	const requestId = `FUND/${prefix}/${year}/${month}/${sequenceStr}`;
 
 	// Handle date
 	let requestedDate;
@@ -570,12 +571,18 @@ async function handleCaisseBalanceCommand(channelId, context) {
 }
 async function createCaisse(
 	type,
+	prefix,
 	channelId,
 	initialBalances = { XOF: 0, USD: 0, EUR: 0 },
 	channelName
 ) {
+	console.log("prefix", prefix);
+	console.log("channelId", channelId);
+	console.log("channelName", channelName);
+	console.log("type", type);
 	const caisse = new Caisse({
 		type,
+		prefix,
 		channelId,
 		channelName,
 		balances: initialBalances,
@@ -587,17 +594,18 @@ async function createCaisse(
 
 	return caisse;
 }
-async function handleCaisseCreateCommand(text, slackClient,userId,channelId) {
+async function handleCaisseCreateCommand(text, slackClient, userId, channelId) {
 	console.log("Creating new caisse...");
 	const args = text.split(" ");
-	if (args.length < 3) {
+	if (args.length < 4) {
 		return createSlackResponse(200, {
-			text: "❌ Usage: `/caisse create [name] [@channel]`",
+			text: "❌ Usage: `/caisse create [name] [prefix] [@channel]`",
 		});
 	}
 
 	const name = args[1];
-	const channel = args[2].replace(/[<@#>]/g, "").split("|")[0];
+	const prefix = args[2];
+	const channel = args[3].replace(/[<@#>]/g, "").split("|")[0];
 
 	// Respond immediately to avoid Slack timeout
 	setImmediate(async () => {
@@ -621,6 +629,7 @@ async function handleCaisseCreateCommand(text, slackClient,userId,channelId) {
 
 			await createCaisse(
 				name,
+				prefix,
 				channel,
 				{ XOF: 0, USD: 0, EUR: 0 },
 				channelName
@@ -634,7 +643,6 @@ async function handleCaisseCreateCommand(text, slackClient,userId,channelId) {
 				},
 				process.env.SLACK_BOT_TOKEN
 			);
-			
 		} catch (error) {
 			console.error("Error creating caisse:", error.message);
 			await notifyTechSlack(error);
@@ -647,7 +655,6 @@ async function handleCaisseCreateCommand(text, slackClient,userId,channelId) {
 				},
 				process.env.SLACK_BOT_TOKEN
 			);
-			
 		}
 	});
 
@@ -655,7 +662,7 @@ async function handleCaisseCreateCommand(text, slackClient,userId,channelId) {
 		text: "⏳ Création de la caisse en cours... Vous serez notifié(e).",
 	});
 }
-async function handleCaisseDeleteCommand(text) {
+async function handleCaisseDeleteCommand(text, slackClient, userId, channelId) {
 	console.log("Deleting a caisse...");
 	const args = text.split(" ");
 	if (args.length < 3) {
@@ -665,30 +672,49 @@ async function handleCaisseDeleteCommand(text) {
 	}
 
 	const type = args[1];
-	const channel = args[2].replace(/[<@#>]/g, ""); // Extract channel ID
+	const channel = args[2].replace(/[<@#>]/g, "").split("|")[0];
+	setImmediate(async () => {
+		try {
+			const caisse = await Caisse.findOneAndDelete({
+				type,
+				channelId: channel,
+			});
+			if (!caisse) {
+				return await postSlackMessageWithRetry(
+					"https://slack.com/api/chat.postEphemeral",
+					{
+						channel: channelId,
+						user: userId,
 
-	try {
-		const caisse = await Caisse.findOneAndDelete({
-			type,
-			channelId: channel,
-		});
-		if (!caisse) {
+						text: `❌ Aucun caisse trouvé avec le type "${type}" et le canal <#${channel}>.`,
+					},
+					process.env.SLACK_BOT_TOKEN
+				);
+			}
+
+			await postSlackMessageWithRetry(
+				"https://slack.com/api/chat.postEphemeral",
+				{
+					channel: channelId,
+					user: userId,
+
+					text: `✅ Caisse "${type}" supprimée avec succès.`,
+				},
+				process.env.SLACK_BOT_TOKEN
+			);
+		} catch (error) {
+			console.error("Error deleting caisse:", error.message);
+			await notifyTechSlack(error);
+
 			return createSlackResponse(200, {
-				text: `❌ Aucun caisse trouvé avec le type "${type}" et le canal <#${channel}>.`,
+				text: `❌ Erreur lors de la suppression de la caisse: ${error.message}`,
 			});
 		}
+	});
 
-		return createSlackResponse(200, {
-			text: `✅ Caisse "${type}" associée au canal <#${channel}> supprimée avec succès.`,
-		});
-	} catch (error) {
-		console.error("Error deleting caisse:", error.message);
-		await notifyTechSlack(error);
-
-		return createSlackResponse(200, {
-			text: `❌ Erreur lors de la suppression de la caisse: ${error.message}`,
-		});
-	}
+	return createSlackResponse(200, {
+		text: "⏳ Création de la caisse en cours... Vous serez notifié(e).",
+	});
 }
 async function handleCaisseListCommand() {
 	console.log("Fetching all caisses...");
@@ -703,6 +729,7 @@ async function handleCaisseListCommand() {
 		let responseText = "*📋 Liste des Caisses:*\n";
 		caisses.forEach((caisse) => {
 			responseText += `• *Caisse:* ${caisse.type}\n`;
+			responseText += `  *Préfixe:* ${caisse.prefix}\n`;
 			responseText += `  *Channel:* <#${caisse.channelId}>\n`;
 			responseText += `  *Balances:* XOF: ${caisse.balances.XOF}, USD: ${caisse.balances.USD}, EUR: ${caisse.balances.EUR}\n`;
 		});
